@@ -1,22 +1,25 @@
 import { useState } from 'react';
 import {
-    Dimensions,
-    PanResponder,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Dimensions,
+  PanResponder,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, {
-    useAnimatedStyle,
-    useSharedValue,
-    withSpring,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GRID_SIZE = 20;
+const CANVAS_SIZE = 3000; // Large canvas for panning
+const MIN_SCALE = 0.3;
+const MAX_SCALE = 3;
 
 interface Node {
   id: string;
@@ -82,11 +85,21 @@ export default function FlowchartCanvas() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [nodeCounter, setNodeCounter] = useState(1);
 
+  // Canvas transform values - start centered
+  const initialX = -(CANVAS_SIZE / 2 - SCREEN_WIDTH / 2);
+  const initialY = -(CANVAS_SIZE / 2 - SCREEN_HEIGHT / 2);
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
+  const translateX = useSharedValue(initialX);
+  const translateY = useSharedValue(initialY);
+  const savedTranslateX = useSharedValue(initialX);
+  const savedTranslateY = useSharedValue(initialY);
+
   const addNode = () => {
     const newNode: Node = {
       id: `node-${Date.now()}`,
-      x: SCREEN_WIDTH / 2 - 75,
-      y: SCREEN_HEIGHT / 3,
+      x: CANVAS_SIZE / 2 - 75,
+      y: CANVAS_SIZE / 2 - 25,
       label: `Node ${nodeCounter}`,
     };
     setNodes([...nodes, newNode]);
@@ -99,12 +112,35 @@ export default function FlowchartCanvas() {
     );
   };
 
-  // Generate grid lines
+  // Canvas pan responder
+  const canvasPanResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderMove: (_, gestureState) => {
+      translateX.value = savedTranslateX.value + gestureState.dx;
+      translateY.value = savedTranslateY.value + gestureState.dy;
+    },
+    onPanResponderRelease: () => {
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+    },
+  });
+
+  // Animated style for canvas transform
+  const canvasAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { scale: scale.value },
+    ],
+  }));
+
+  // Generate grid lines for large canvas
   const renderGrid = () => {
     const horizontalLines = [];
     const verticalLines = [];
 
-    for (let i = 0; i < SCREEN_HEIGHT / GRID_SIZE; i++) {
+    for (let i = 0; i < CANVAS_SIZE / GRID_SIZE; i++) {
       horizontalLines.push(
         <View
           key={`h-${i}`}
@@ -117,7 +153,7 @@ export default function FlowchartCanvas() {
       );
     }
 
-    for (let i = 0; i < SCREEN_WIDTH / GRID_SIZE; i++) {
+    for (let i = 0; i < CANVAS_SIZE / GRID_SIZE; i++) {
       verticalLines.push(
         <View
           key={`v-${i}`}
@@ -133,32 +169,59 @@ export default function FlowchartCanvas() {
     return [...horizontalLines, ...verticalLines];
   };
 
+  // Zoom controls
+  const zoomIn = () => {
+    const newScale = Math.min(scale.value * 1.2, MAX_SCALE);
+    scale.value = withSpring(newScale);
+    savedScale.value = newScale;
+  };
+
+  const zoomOut = () => {
+    const newScale = Math.max(scale.value / 1.2, MIN_SCALE);
+    scale.value = withSpring(newScale);
+    savedScale.value = newScale;
+  };
+
+  const resetView = () => {
+    scale.value = withSpring(1);
+    savedScale.value = 1;
+    translateX.value = withSpring(initialX);
+    translateY.value = withSpring(initialY);
+    savedTranslateX.value = initialX;
+    savedTranslateY.value = initialY;
+  };
+
   return (
     <GestureHandlerRootView style={styles.container}>
       {/* Header with Safe Area */}
       <View style={[styles.header, { paddingTop: insets.top }]}>
         <Text style={styles.headerTitle}>Flowchart Creator</Text>
         <View style={styles.headerButtons}>
-          <TouchableOpacity style={styles.headerButton}>
+          <TouchableOpacity style={styles.headerButton} onPress={zoomIn}>
             <Text style={styles.headerButtonText}>🔍+</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.headerButton}>
+          <TouchableOpacity style={styles.headerButton} onPress={zoomOut}>
             <Text style={styles.headerButtonText}>🔍-</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.headerButton}>
-            <Text style={styles.headerButtonText}>⋮</Text>
+          <TouchableOpacity style={styles.headerButton} onPress={resetView}>
+            <Text style={styles.headerButtonText}>⟳</Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Canvas with Grid */}
-      <View style={styles.canvas}>
-        {renderGrid()}
-        
-        {/* Nodes */}
-        {nodes.map((node) => (
-          <DraggableNode key={node.id} node={node} onMove={moveNode} />
-        ))}
+      {/* Zoomable/Pannable Canvas */}
+      <View style={styles.canvasContainer}>
+        <Animated.View 
+          style={[styles.canvas, canvasAnimatedStyle]}
+          {...canvasPanResponder.panHandlers}
+        >
+          {renderGrid()}
+          
+          {/* Nodes */}
+          {nodes.map((node) => (
+            <DraggableNode key={node.id} node={node} onMove={moveNode} />
+          ))}
+        </Animated.View>
       </View>
 
       {/* Right Side Panel - 4 Buttons */}
@@ -198,7 +261,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   header: {
-    height: 56,
+    minHeight: 56,
+    paddingBottom: 12,
     backgroundColor: '#4A9EE0',
     flexDirection: 'row',
     alignItems: 'center',
@@ -227,10 +291,15 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
   canvas: {
-    flex: 1,
+    width: CANVAS_SIZE,
+    height: CANVAS_SIZE,
     backgroundColor: '#FAFAFA',
     position: 'relative',
+  },
+  canvasContainer: {
+    flex: 1,
     overflow: 'hidden',
+    backgroundColor: '#FAFAFA',
   },
   gridLine: {
     position: 'absolute',
