@@ -20,6 +20,8 @@ const GRID_SIZE = 20;
 const CANVAS_SIZE = 3000; // Large canvas for panning
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 3;
+const NODE_WIDTH = 150;
+const NODE_HEIGHT = 50;
 
 interface Node {
   id: string;
@@ -28,19 +30,33 @@ interface Node {
   label: string;
 }
 
+interface Edge {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  sourcePosition: 'top' | 'bottom' | 'left' | 'right';
+  targetPosition: 'top' | 'bottom' | 'left' | 'right';
+}
+
 interface DraggableNodeProps {
   node: Node;
   onMove: (id: string, x: number, y: number) => void;
+  onConnectionPointTap: (nodeId: string, position: 'top' | 'bottom' | 'left' | 'right') => void;
+  isConnecting: boolean;
+  connectingNodeId: string | null;
 }
 
-function DraggableNode({ node, onMove }: DraggableNodeProps) {
+function DraggableNode({ node, onMove, onConnectionPointTap, isConnecting, connectingNodeId }: DraggableNodeProps) {
   const translateX = useSharedValue(node.x);
   const translateY = useSharedValue(node.y);
   const scale = useSharedValue(1);
 
   const panResponder = PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
+    onStartShouldSetPanResponder: () => !isConnecting,
+    onMoveShouldSetPanResponder: () => !isConnecting,
+    onStartShouldSetPanResponderCapture: () => !isConnecting,
+    onMoveShouldSetPanResponderCapture: () => !isConnecting,
+    onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: () => {
       scale.value = withSpring(1.05);
     },
@@ -64,16 +80,30 @@ function DraggableNode({ node, onMove }: DraggableNodeProps) {
     ],
   }));
 
+  const isSourceNode = connectingNodeId === node.id;
+
   return (
     <Animated.View
       style={[styles.node, animatedStyle]}
       {...panResponder.panHandlers}
     >
       {/* Connection points */}
-      <View style={[styles.connectionPoint, styles.connectionTop]} />
-      <View style={[styles.connectionPoint, styles.connectionBottom]} />
-      <View style={[styles.connectionPoint, styles.connectionLeft]} />
-      <View style={[styles.connectionPoint, styles.connectionRight]} />
+      <TouchableOpacity 
+        style={[styles.connectionPoint, styles.connectionTop, isConnecting && !isSourceNode && styles.connectionPointActive]}
+        onPress={() => onConnectionPointTap(node.id, 'top')}
+      />
+      <TouchableOpacity 
+        style={[styles.connectionPoint, styles.connectionBottom, isConnecting && !isSourceNode && styles.connectionPointActive]}
+        onPress={() => onConnectionPointTap(node.id, 'bottom')}
+      />
+      <TouchableOpacity 
+        style={[styles.connectionPoint, styles.connectionLeft, isConnecting && !isSourceNode && styles.connectionPointActive]}
+        onPress={() => onConnectionPointTap(node.id, 'left')}
+      />
+      <TouchableOpacity 
+        style={[styles.connectionPoint, styles.connectionRight, isConnecting && !isSourceNode && styles.connectionPointActive]}
+        onPress={() => onConnectionPointTap(node.id, 'right')}
+      />
       
       <Text style={styles.nodeText}>{node.label}</Text>
     </Animated.View>
@@ -84,6 +114,8 @@ export default function FlowchartCanvas() {
   const insets = useSafeAreaInsets();
   const [nodes, setNodes] = useState<Node[]>([]);
   const [nodeCounter, setNodeCounter] = useState(1);
+  const [edges, setEdges] = useState<Edge[]>([]);
+  const [connectingFrom, setConnectingFrom] = useState<{nodeId: string, position: 'top' | 'bottom' | 'left' | 'right'} | null>(null);
 
   // Canvas transform values - start centered
   const initialX = -(CANVAS_SIZE / 2 - SCREEN_WIDTH / 2);
@@ -94,6 +126,44 @@ export default function FlowchartCanvas() {
   const translateY = useSharedValue(initialY);
   const savedTranslateX = useSharedValue(initialX);
   const savedTranslateY = useSharedValue(initialY);
+
+  // Get connection point coordinates for a node
+  const getConnectionPoint = (node: Node, position: 'top' | 'bottom' | 'left' | 'right') => {
+    const centerX = node.x + NODE_WIDTH / 2;
+    const centerY = node.y + NODE_HEIGHT / 2;
+    
+    switch (position) {
+      case 'top':
+        return { x: centerX, y: node.y };
+      case 'bottom':
+        return { x: centerX, y: node.y + NODE_HEIGHT };
+      case 'left':
+        return { x: node.x, y: centerY };
+      case 'right':
+        return { x: node.x + NODE_WIDTH, y: centerY };
+    }
+  };
+
+  // Handle connection point tap
+  const handleConnectionPointTap = (nodeId: string, position: 'top' | 'bottom' | 'left' | 'right') => {
+    if (connectingFrom === null) {
+      // Start connection
+      setConnectingFrom({ nodeId, position });
+    } else {
+      // Complete connection
+      if (connectingFrom.nodeId !== nodeId) {
+        const newEdge: Edge = {
+          id: `edge-${Date.now()}`,
+          sourceId: connectingFrom.nodeId,
+          targetId: nodeId,
+          sourcePosition: connectingFrom.position,
+          targetPosition: position,
+        };
+        setEdges([...edges, newEdge]);
+      }
+      setConnectingFrom(null);
+    }
+  };
 
   const addNode = () => {
     const newNode: Node = {
@@ -215,11 +285,50 @@ export default function FlowchartCanvas() {
           style={[styles.canvas, canvasAnimatedStyle]}
           {...canvasPanResponder.panHandlers}
         >
+          {/* View-based edges (since react-native-svg has issues with Expo Go) */}
+          {edges.map((edge) => {
+            const sourceNode = nodes.find(n => n.id === edge.sourceId);
+            const targetNode = nodes.find(n => n.id === edge.targetId);
+            if (!sourceNode || !targetNode) return null;
+            
+            const start = getConnectionPoint(sourceNode, edge.sourcePosition);
+            const end = getConnectionPoint(targetNode, edge.targetPosition);
+            
+            // Calculate line properties
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const length = Math.sqrt(dx * dx + dy * dy);
+            const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+            
+            return (
+              <View
+                key={edge.id}
+                style={{
+                  position: 'absolute',
+                  left: start.x,
+                  top: start.y - 1,
+                  width: length,
+                  height: 2,
+                  backgroundColor: '#4A9EE0',
+                  transformOrigin: 'left center',
+                  transform: [{ rotate: `${angle}deg` }],
+                }}
+              />
+            );
+          })}
+          
           {renderGrid()}
           
           {/* Nodes */}
           {nodes.map((node) => (
-            <DraggableNode key={node.id} node={node} onMove={moveNode} />
+            <DraggableNode 
+              key={node.id} 
+              node={node} 
+              onMove={moveNode}
+              onConnectionPointTap={handleConnectionPointTap}
+              isConnecting={connectingFrom !== null}
+              connectingNodeId={connectingFrom?.nodeId || null}
+            />
           ))}
         </Animated.View>
       </View>
@@ -344,6 +453,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderWidth: 2,
     borderColor: '#4A9EE0',
+  },
+  connectionPointActive: {
+    backgroundColor: '#4A9EE0',
+    borderColor: '#2E7BB8',
+    transform: [{ scale: 1.3 }],
   },
   connectionTop: {
     top: -6,
