@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Dimensions,
   PanResponder,
@@ -41,36 +41,186 @@ interface Edge {
 interface DraggableNodeProps {
   node: Node;
   onMove: (id: string, x: number, y: number) => void;
+  onDragging: (id: string, x: number, y: number) => void;
+  onDragEnd: (id: string) => void;
   onConnectionPointTap: (nodeId: string, position: 'top' | 'bottom' | 'left' | 'right') => void;
+  onConnectionDragStart: (nodeId: string, position: 'top' | 'bottom' | 'left' | 'right') => void;
+  onConnectionDragMove: (dx: number, dy: number) => void;
+  onConnectionDragEnd: (nodeId: string, position: 'top' | 'bottom' | 'left' | 'right') => void;
+  onConnectionDragCancel: () => void;
   isConnecting: boolean;
   connectingNodeId: string | null;
+  allNodes: Node[];
+  canvasScale: number;
 }
 
-function DraggableNode({ node, onMove, onConnectionPointTap, isConnecting, connectingNodeId }: DraggableNodeProps) {
+function DraggableNode({ 
+  node, 
+  onMove, 
+  onDragging,
+  onDragEnd,
+  onConnectionPointTap, 
+  onConnectionDragStart,
+  onConnectionDragMove,
+  onConnectionDragEnd,
+  onConnectionDragCancel,
+  isConnecting, 
+  connectingNodeId,
+  allNodes,
+  canvasScale
+}: DraggableNodeProps) {
   const translateX = useSharedValue(node.x);
   const translateY = useSharedValue(node.y);
   const scale = useSharedValue(1);
+  
+  // Use refs to store latest values without causing re-renders
+  const isDraggingConnectionRef = useRef(false);
+  const allNodesRef = useRef(allNodes);
+  allNodesRef.current = allNodes;
+  
+  // Store node position in ref to access latest value in callbacks
+  const nodeRef = useRef(node);
+  nodeRef.current = node;
+  
+  // Store canvasScale in ref
+  const canvasScaleRef = useRef(canvasScale);
+  canvasScaleRef.current = canvasScale;
+  
+  // Store callbacks in refs to access latest versions
+  const callbacksRef = useRef({
+    onMove,
+    onDragging,
+    onDragEnd,
+    onConnectionDragStart,
+    onConnectionDragMove,
+    onConnectionDragEnd,
+    onConnectionDragCancel,
+  });
+  callbacksRef.current = {
+    onMove,
+    onDragging,
+    onDragEnd,
+    onConnectionDragStart,
+    onConnectionDragMove,
+    onConnectionDragEnd,
+    onConnectionDragCancel,
+  };
 
-  const panResponder = PanResponder.create({
-    onStartShouldSetPanResponder: () => !isConnecting,
-    onMoveShouldSetPanResponder: () => !isConnecting,
-    onStartShouldSetPanResponderCapture: () => !isConnecting,
-    onMoveShouldSetPanResponderCapture: () => !isConnecting,
+  // Memoize node drag PanResponder
+  const panResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => !isDraggingConnectionRef.current,
+    onMoveShouldSetPanResponder: () => !isDraggingConnectionRef.current,
+    onStartShouldSetPanResponderCapture: () => false,
+    onMoveShouldSetPanResponderCapture: () => false,
     onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: () => {
       scale.value = withSpring(1.05);
     },
     onPanResponderMove: (_, gestureState) => {
-      translateX.value = node.x + gestureState.dx;
-      translateY.value = node.y + gestureState.dy;
+      // Divide by scale to get correct canvas coordinates
+      const scaledDx = gestureState.dx / canvasScaleRef.current;
+      const scaledDy = gestureState.dy / canvasScaleRef.current;
+      const newX = nodeRef.current.x + scaledDx;
+      const newY = nodeRef.current.y + scaledDy;
+      translateX.value = newX;
+      translateY.value = newY;
+      // Update edge positions in real-time
+      callbacksRef.current.onDragging(nodeRef.current.id, newX, newY);
     },
     onPanResponderRelease: (_, gestureState) => {
       scale.value = withSpring(1);
-      const newX = node.x + gestureState.dx;
-      const newY = node.y + gestureState.dy;
-      onMove(node.id, newX, newY);
+      const scaledDx = gestureState.dx / canvasScaleRef.current;
+      const scaledDy = gestureState.dy / canvasScaleRef.current;
+      const newX = nodeRef.current.x + scaledDx;
+      const newY = nodeRef.current.y + scaledDy;
+      callbacksRef.current.onMove(nodeRef.current.id, newX, newY);
+      callbacksRef.current.onDragEnd(nodeRef.current.id);
     },
-  });
+  }), []);
+
+  // Create memoized pan responder for connection point drag
+  const createConnectionPanResponder = (position: 'top' | 'bottom' | 'left' | 'right') => {
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: () => {
+        isDraggingConnectionRef.current = true;
+        callbacksRef.current.onConnectionDragStart(nodeRef.current.id, position);
+      },
+      onPanResponderMove: (_, gestureState) => {
+        // Divide by scale to get correct canvas coordinates
+        const scaledDx = gestureState.dx / canvasScaleRef.current;
+        const scaledDy = gestureState.dy / canvasScaleRef.current;
+        callbacksRef.current.onConnectionDragMove(scaledDx, scaledDy);
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        isDraggingConnectionRef.current = false;
+        
+        const currentNode = nodeRef.current;
+        const currentScale = canvasScaleRef.current;
+        // Calculate drop position with scale compensation
+        const scaledDx = gestureState.dx / currentScale;
+        const scaledDy = gestureState.dy / currentScale;
+        const startX = currentNode.x + (position === 'left' ? 0 : position === 'right' ? NODE_WIDTH : NODE_WIDTH / 2);
+        const startY = currentNode.y + (position === 'top' ? 0 : position === 'bottom' ? NODE_HEIGHT : NODE_HEIGHT / 2);
+        const dropX = startX + scaledDx;
+        const dropY = startY + scaledDy;
+        
+        const currentNodes = allNodesRef.current;
+        console.log('Drop at:', dropX, dropY, 'from node:', currentNode.id, 'available nodes:', currentNodes.map(n => ({ id: n.id, x: n.x, y: n.y })));
+        
+        // Find if we're over any other node
+        let foundTarget = false;
+        for (const otherNode of currentNodes) {
+          if (otherNode.id === currentNode.id) continue;
+          
+          // Check if dropped within the other node's bounds (more generous)
+          const nodeLeft = otherNode.x - 20;
+          const nodeRight = otherNode.x + NODE_WIDTH + 20;
+          const nodeTop = otherNode.y - 20;
+          const nodeBottom = otherNode.y + NODE_HEIGHT + 20;
+          
+          if (dropX >= nodeLeft && dropX <= nodeRight && dropY >= nodeTop && dropY <= nodeBottom) {
+            // Determine which connection point is closest
+            const positions: ('top' | 'bottom' | 'left' | 'right')[] = ['top', 'bottom', 'left', 'right'];
+            let closestPos: 'top' | 'bottom' | 'left' | 'right' = 'top';
+            let minDistance = Infinity;
+            
+            for (const pos of positions) {
+              const point = {
+                x: otherNode.x + (pos === 'left' ? 0 : pos === 'right' ? NODE_WIDTH : NODE_WIDTH / 2),
+                y: otherNode.y + (pos === 'top' ? 0 : pos === 'bottom' ? NODE_HEIGHT : NODE_HEIGHT / 2),
+              };
+              const distance = Math.sqrt(Math.pow(dropX - point.x, 2) + Math.pow(dropY - point.y, 2));
+              if (distance < minDistance) {
+                minDistance = distance;
+                closestPos = pos;
+              }
+            }
+            
+            console.log('Found target node:', otherNode.id, 'position:', closestPos);
+            callbacksRef.current.onConnectionDragEnd(otherNode.id, closestPos);
+            foundTarget = true;
+            break;
+          }
+        }
+        
+        if (!foundTarget) {
+          console.log('No target found');
+          callbacksRef.current.onConnectionDragCancel();
+        }
+      },
+    });
+  };
+
+  // Memoize connection point PanResponders to prevent recreation
+  const topPanResponder = useMemo(() => createConnectionPanResponder('top'), []);
+  const bottomPanResponder = useMemo(() => createConnectionPanResponder('bottom'), []);
+  const leftPanResponder = useMemo(() => createConnectionPanResponder('left'), []);
+  const rightPanResponder = useMemo(() => createConnectionPanResponder('right'), []);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [
@@ -85,27 +235,32 @@ function DraggableNode({ node, onMove, onConnectionPointTap, isConnecting, conne
   return (
     <Animated.View
       style={[styles.node, animatedStyle]}
-      {...panResponder.panHandlers}
     >
-      {/* Connection points */}
-      <TouchableOpacity 
-        style={[styles.connectionPoint, styles.connectionTop, isConnecting && !isSourceNode && styles.connectionPointActive]}
-        onPress={() => onConnectionPointTap(node.id, 'top')}
-      />
-      <TouchableOpacity 
-        style={[styles.connectionPoint, styles.connectionBottom, isConnecting && !isSourceNode && styles.connectionPointActive]}
-        onPress={() => onConnectionPointTap(node.id, 'bottom')}
-      />
-      <TouchableOpacity 
-        style={[styles.connectionPoint, styles.connectionLeft, isConnecting && !isSourceNode && styles.connectionPointActive]}
-        onPress={() => onConnectionPointTap(node.id, 'left')}
-      />
-      <TouchableOpacity 
-        style={[styles.connectionPoint, styles.connectionRight, isConnecting && !isSourceNode && styles.connectionPointActive]}
-        onPress={() => onConnectionPointTap(node.id, 'right')}
-      />
+      {/* Node drag area - center of node */}
+      <View 
+        style={styles.nodeDragArea}
+        {...panResponder.panHandlers}
+      >
+        <Text style={styles.nodeText}>{node.label}</Text>
+      </View>
       
-      <Text style={styles.nodeText}>{node.label}</Text>
+      {/* Connection points - now draggable, positioned outside */}
+      <View 
+        style={[styles.connectionPoint, styles.connectionTop, isConnecting && !isSourceNode && styles.connectionPointActive]}
+        {...topPanResponder.panHandlers}
+      />
+      <View 
+        style={[styles.connectionPoint, styles.connectionBottom, isConnecting && !isSourceNode && styles.connectionPointActive]}
+        {...bottomPanResponder.panHandlers}
+      />
+      <View 
+        style={[styles.connectionPoint, styles.connectionLeft, isConnecting && !isSourceNode && styles.connectionPointActive]}
+        {...leftPanResponder.panHandlers}
+      />
+      <View 
+        style={[styles.connectionPoint, styles.connectionRight, isConnecting && !isSourceNode && styles.connectionPointActive]}
+        {...rightPanResponder.panHandlers}
+      />
     </Animated.View>
   );
 }
@@ -116,6 +271,11 @@ export default function FlowchartCanvas() {
   const [nodeCounter, setNodeCounter] = useState(1);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [connectingFrom, setConnectingFrom] = useState<{nodeId: string, position: 'top' | 'bottom' | 'left' | 'right'} | null>(null);
+  const [dragLine, setDragLine] = useState<{startX: number, startY: number, endX: number, endY: number} | null>(null);
+  // Track node position during drag for real-time edge updates
+  const [draggingNode, setDraggingNode] = useState<{id: string, x: number, y: number} | null>(null);
+  // Track current scale for gesture compensation
+  const [currentScale, setCurrentScale] = useState(1);
 
   // Canvas transform values - start centered
   const initialX = -(CANVAS_SIZE / 2 - SCREEN_WIDTH / 2);
@@ -127,24 +287,69 @@ export default function FlowchartCanvas() {
   const savedTranslateX = useSharedValue(initialX);
   const savedTranslateY = useSharedValue(initialY);
 
-  // Get connection point coordinates for a node
-  const getConnectionPoint = (node: Node, position: 'top' | 'bottom' | 'left' | 'right') => {
-    const centerX = node.x + NODE_WIDTH / 2;
-    const centerY = node.y + NODE_HEIGHT / 2;
+  // Get connection point coordinates for a node, with optional override for dragging position
+  const getConnectionPoint = (node: Node, position: 'top' | 'bottom' | 'left' | 'right', overridePos?: {x: number, y: number}) => {
+    const nodeX = overridePos?.x ?? node.x;
+    const nodeY = overridePos?.y ?? node.y;
+    const centerX = nodeX + NODE_WIDTH / 2;
+    const centerY = nodeY + NODE_HEIGHT / 2;
     
     switch (position) {
       case 'top':
-        return { x: centerX, y: node.y };
+        return { x: centerX, y: nodeY };
       case 'bottom':
-        return { x: centerX, y: node.y + NODE_HEIGHT };
+        return { x: centerX, y: nodeY + NODE_HEIGHT };
       case 'left':
-        return { x: node.x, y: centerY };
+        return { x: nodeX, y: centerY };
       case 'right':
-        return { x: node.x + NODE_WIDTH, y: centerY };
+        return { x: nodeX + NODE_WIDTH, y: centerY };
     }
   };
 
-  // Handle connection point tap
+  // Start connection drag from a connection point
+  const handleConnectionDragStart = (nodeId: string, position: 'top' | 'bottom' | 'left' | 'right') => {
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    
+    const point = getConnectionPoint(node, position);
+    setConnectingFrom({ nodeId, position });
+    setDragLine({ startX: point.x, startY: point.y, endX: point.x, endY: point.y });
+  };
+
+  // Update drag line position
+  const handleConnectionDragMove = (dx: number, dy: number) => {
+    if (dragLine) {
+      setDragLine({
+        ...dragLine,
+        endX: dragLine.startX + dx,
+        endY: dragLine.startY + dy,
+      });
+    }
+  };
+
+  // End connection drag - check if dropped on a connection point
+  const handleConnectionDragEnd = (nodeId: string, position: 'top' | 'bottom' | 'left' | 'right') => {
+    if (connectingFrom && connectingFrom.nodeId !== nodeId) {
+      const newEdge: Edge = {
+        id: `edge-${Date.now()}`,
+        sourceId: connectingFrom.nodeId,
+        targetId: nodeId,
+        sourcePosition: connectingFrom.position,
+        targetPosition: position,
+      };
+      setEdges([...edges, newEdge]);
+    }
+    setConnectingFrom(null);
+    setDragLine(null);
+  };
+
+  // Cancel connection drag
+  const cancelConnectionDrag = () => {
+    setConnectingFrom(null);
+    setDragLine(null);
+  };
+
+  // Handle connection point tap (for tap-to-connect mode)
   const handleConnectionPointTap = (nodeId: string, position: 'top' | 'bottom' | 'left' | 'right') => {
     if (connectingFrom === null) {
       // Start connection
@@ -180,6 +385,16 @@ export default function FlowchartCanvas() {
     setNodes(
       nodes.map((node) => (node.id === id ? { ...node, x, y } : node))
     );
+  };
+
+  // Handle node dragging for real-time edge updates
+  const handleNodeDragging = (id: string, x: number, y: number) => {
+    setDraggingNode({ id, x, y });
+  };
+
+  // Handle node drag end - clear dragging state
+  const handleNodeDragEnd = (id: string) => {
+    setDraggingNode(null);
   };
 
   // Canvas pan responder
@@ -244,17 +459,20 @@ export default function FlowchartCanvas() {
     const newScale = Math.min(scale.value * 1.2, MAX_SCALE);
     scale.value = withSpring(newScale);
     savedScale.value = newScale;
+    setCurrentScale(newScale);
   };
 
   const zoomOut = () => {
     const newScale = Math.max(scale.value / 1.2, MIN_SCALE);
     scale.value = withSpring(newScale);
     savedScale.value = newScale;
+    setCurrentScale(newScale);
   };
 
   const resetView = () => {
     scale.value = withSpring(1);
     savedScale.value = 1;
+    setCurrentScale(1);
     translateX.value = withSpring(initialX);
     translateY.value = withSpring(initialY);
     savedTranslateX.value = initialX;
@@ -285,37 +503,119 @@ export default function FlowchartCanvas() {
           style={[styles.canvas, canvasAnimatedStyle]}
           {...canvasPanResponder.panHandlers}
         >
-          {/* View-based edges (since react-native-svg has issues with Expo Go) */}
+          {/* Bezier curve edges */}
           {edges.map((edge) => {
             const sourceNode = nodes.find(n => n.id === edge.sourceId);
             const targetNode = nodes.find(n => n.id === edge.targetId);
             if (!sourceNode || !targetNode) return null;
             
-            const start = getConnectionPoint(sourceNode, edge.sourcePosition);
-            const end = getConnectionPoint(targetNode, edge.targetPosition);
+            // Use dragging position if this node is being dragged
+            const sourceOverride = draggingNode?.id === sourceNode.id ? { x: draggingNode.x, y: draggingNode.y } : undefined;
+            const targetOverride = draggingNode?.id === targetNode.id ? { x: draggingNode.x, y: draggingNode.y } : undefined;
             
-            // Calculate line properties
-            const dx = end.x - start.x;
-            const dy = end.y - start.y;
-            const length = Math.sqrt(dx * dx + dy * dy);
-            const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+            const start = getConnectionPoint(sourceNode, edge.sourcePosition, sourceOverride);
+            const end = getConnectionPoint(targetNode, edge.targetPosition, targetOverride);
             
-            return (
-              <View
-                key={edge.id}
-                style={{
-                  position: 'absolute',
-                  left: start.x,
-                  top: start.y - 1,
-                  width: length,
-                  height: 2,
-                  backgroundColor: '#4A9EE0',
-                  transformOrigin: 'left center',
-                  transform: [{ rotate: `${angle}deg` }],
-                }}
-              />
-            );
+            // Calculate control points for smooth bezier curve
+            const distance = Math.sqrt(Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2));
+            const curveOffset = Math.min(distance * 0.5, 80); // Curve intensity
+            
+            // Control points based on connection positions
+            let cp1 = { x: start.x, y: start.y };
+            let cp2 = { x: end.x, y: end.y };
+            
+            // Adjust control points based on source position
+            switch (edge.sourcePosition) {
+              case 'top':
+                cp1 = { x: start.x, y: start.y - curveOffset };
+                break;
+              case 'bottom':
+                cp1 = { x: start.x, y: start.y + curveOffset };
+                break;
+              case 'left':
+                cp1 = { x: start.x - curveOffset, y: start.y };
+                break;
+              case 'right':
+                cp1 = { x: start.x + curveOffset, y: start.y };
+                break;
+            }
+            
+            // Adjust control points based on target position
+            switch (edge.targetPosition) {
+              case 'top':
+                cp2 = { x: end.x, y: end.y - curveOffset };
+                break;
+              case 'bottom':
+                cp2 = { x: end.x, y: end.y + curveOffset };
+                break;
+              case 'left':
+                cp2 = { x: end.x - curveOffset, y: end.y };
+                break;
+              case 'right':
+                cp2 = { x: end.x + curveOffset, y: end.y };
+                break;
+            }
+            
+            // Generate bezier curve points
+            const segments = 20;
+            const curveSegments = [];
+            
+            for (let i = 0; i < segments; i++) {
+              const t1 = i / segments;
+              const t2 = (i + 1) / segments;
+              
+              // Cubic bezier formula
+              const getPoint = (t: number) => {
+                const mt = 1 - t;
+                return {
+                  x: mt * mt * mt * start.x + 3 * mt * mt * t * cp1.x + 3 * mt * t * t * cp2.x + t * t * t * end.x,
+                  y: mt * mt * mt * start.y + 3 * mt * mt * t * cp1.y + 3 * mt * t * t * cp2.y + t * t * t * end.y,
+                };
+              };
+              
+              const p1 = getPoint(t1);
+              const p2 = getPoint(t2);
+              
+              const segDx = p2.x - p1.x;
+              const segDy = p2.y - p1.y;
+              const segLength = Math.sqrt(segDx * segDx + segDy * segDy);
+              const segAngle = Math.atan2(segDy, segDx) * (180 / Math.PI);
+              
+              curveSegments.push(
+                <View
+                  key={`${edge.id}-seg-${i}`}
+                  style={{
+                    position: 'absolute',
+                    left: p1.x,
+                    top: p1.y - 1,
+                    width: segLength + 1, // +1 to prevent gaps
+                    height: 2,
+                    backgroundColor: '#4A9EE0',
+                    transformOrigin: 'left center',
+                    transform: [{ rotate: `${segAngle}deg` }],
+                  }}
+                />
+              );
+            }
+            
+            return <React.Fragment key={edge.id}>{curveSegments}</React.Fragment>;
           })}
+          
+          {/* Drag line - shows while dragging from connection point */}
+          {dragLine && (
+            <View
+              style={{
+                position: 'absolute',
+                left: dragLine.startX,
+                top: dragLine.startY - 1,
+                width: Math.sqrt(Math.pow(dragLine.endX - dragLine.startX, 2) + Math.pow(dragLine.endY - dragLine.startY, 2)),
+                height: 2,
+                backgroundColor: '#FF6B6B',
+                transformOrigin: 'left center',
+                transform: [{ rotate: `${Math.atan2(dragLine.endY - dragLine.startY, dragLine.endX - dragLine.startX) * (180 / Math.PI)}deg` }],
+              }}
+            />
+          )}
           
           {renderGrid()}
           
@@ -325,9 +625,17 @@ export default function FlowchartCanvas() {
               key={node.id} 
               node={node} 
               onMove={moveNode}
+              onDragging={handleNodeDragging}
+              onDragEnd={handleNodeDragEnd}
               onConnectionPointTap={handleConnectionPointTap}
+              onConnectionDragStart={handleConnectionDragStart}
+              onConnectionDragMove={handleConnectionDragMove}
+              onConnectionDragEnd={handleConnectionDragEnd}
+              onConnectionDragCancel={cancelConnectionDrag}
               isConnecting={connectingFrom !== null}
               connectingNodeId={connectingFrom?.nodeId || null}
+              allNodes={nodes}
+              canvasScale={currentScale}
             />
           ))}
         </Animated.View>
@@ -445,11 +753,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
   },
+  nodeDragArea: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   connectionPoint: {
     position: 'absolute',
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     backgroundColor: '#FFFFFF',
     borderWidth: 2,
     borderColor: '#4A9EE0',
@@ -457,27 +771,27 @@ const styles = StyleSheet.create({
   connectionPointActive: {
     backgroundColor: '#4A9EE0',
     borderColor: '#2E7BB8',
-    transform: [{ scale: 1.3 }],
+    transform: [{ scale: 1.2 }],
   },
   connectionTop: {
-    top: -6,
+    top: -10,
     left: '50%',
-    marginLeft: -6,
+    marginLeft: -10,
   },
   connectionBottom: {
-    bottom: -6,
+    bottom: -10,
     left: '50%',
-    marginLeft: -6,
+    marginLeft: -10,
   },
   connectionLeft: {
-    left: -6,
+    left: -10,
     top: '50%',
-    marginTop: -6,
+    marginTop: -10,
   },
   connectionRight: {
-    right: -6,
+    right: -10,
     top: '50%',
-    marginTop: -6,
+    marginTop: -10,
   },
   rightPanel: {
     position: 'absolute',
