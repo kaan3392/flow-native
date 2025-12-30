@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Dimensions,
@@ -23,7 +24,9 @@ const CANVAS_SIZE = 3000; // Large canvas for panning
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 3;
 const NODE_WIDTH = 150;
+
 const NODE_HEIGHT = 50;
+const FLOWCHART_STATE_KEY = "FLOWCHART_STATE_V1";
 
 type NodeType =
   | "rectangle"
@@ -712,7 +715,54 @@ export default function FlowchartCanvas() {
   };
 
   const canUndo = historyIndex > 0;
+
   const canRedo = historyIndex < history.length - 1;
+
+  // Load state on mount
+  useEffect(() => {
+    const loadState = async () => {
+      try {
+        const savedState = await AsyncStorage.getItem(FLOWCHART_STATE_KEY);
+        if (savedState) {
+          const parsedState = JSON.parse(savedState);
+          setNodes(parsedState.nodes || []);
+          setEdges(parsedState.edges || []);
+          setNodeCounter(parsedState.nodeCounter || 1);
+          // Initialize history with loaded state
+          setHistory([
+            {
+              nodes: parsedState.nodes || [],
+              edges: parsedState.edges || [],
+              nodeCounter: parsedState.nodeCounter || 1,
+            },
+          ]);
+        }
+      } catch (error) {
+        console.error("Failed to load state", error);
+      }
+    };
+    loadState();
+  }, []);
+
+  // Save state whenever relevant data changes
+  useEffect(() => {
+    const saveState = async () => {
+      try {
+        const stateToSave = JSON.stringify({
+          nodes,
+          edges,
+          nodeCounter,
+        });
+        await AsyncStorage.setItem(FLOWCHART_STATE_KEY, stateToSave);
+      } catch (error) {
+        console.error("Failed to save state", error);
+      }
+    };
+
+    // Debounce save slightly to avoid excessive writes
+    const timeoutId = setTimeout(saveState, 500);
+    return () => clearTimeout(timeoutId);
+  }, [nodes, edges, nodeCounter]);
 
   // Canvas transform values - start centered
   const initialX = -(CANVAS_SIZE / 2 - SCREEN_WIDTH / 2);
