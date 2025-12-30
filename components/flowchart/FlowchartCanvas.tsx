@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -71,6 +72,10 @@ interface DraggableNodeProps {
     position: "top" | "bottom" | "left" | "right"
   ) => void;
   onConnectionDragCancel: () => void;
+  onConnectionPointDoubleTap: (
+    nodeId: string,
+    position: "top" | "bottom" | "left" | "right"
+  ) => void;
   isConnecting: boolean;
   connectingNodeId: string | null;
   allNodes: Node[];
@@ -87,6 +92,7 @@ function DraggableNode({
   onConnectionDragMove,
   onConnectionDragEnd,
   onConnectionDragCancel,
+  onConnectionPointDoubleTap,
   isConnecting,
   connectingNodeId,
   allNodes,
@@ -101,6 +107,9 @@ function DraggableNode({
     translateX.value = node.x;
     translateY.value = node.y;
   }, [node.x, node.y]);
+
+  // Track double taps
+  const lastTapRef = useRef<number | null>(null);
 
   // Use refs to store latest values without causing re-renders
   const isDraggingConnectionRef = useRef(false);
@@ -124,6 +133,7 @@ function DraggableNode({
     onConnectionDragMove,
     onConnectionDragEnd,
     onConnectionDragCancel,
+    onConnectionPointDoubleTap,
   });
   callbacksRef.current = {
     onMove,
@@ -133,6 +143,7 @@ function DraggableNode({
     onConnectionDragMove,
     onConnectionDragEnd,
     onConnectionDragCancel,
+    onConnectionPointDoubleTap,
   };
 
   // Memoize node drag PanResponder
@@ -182,6 +193,18 @@ function DraggableNode({
       onMoveShouldSetPanResponderCapture: () => true,
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
+        const now = Date.now();
+        if (lastTapRef.current && now - lastTapRef.current < 300) {
+          // Double tap detected
+          callbacksRef.current.onConnectionPointDoubleTap(
+            nodeRef.current.id,
+            position
+          );
+          lastTapRef.current = null; // Reset
+          return;
+        }
+        lastTapRef.current = now;
+
         isDraggingConnectionRef.current = true;
         callbacksRef.current.onConnectionDragStart(
           nodeRef.current.id,
@@ -251,8 +274,6 @@ function DraggableNode({
             const positions: ("top" | "bottom" | "left" | "right")[] = [
               "top",
               "bottom",
-              "left",
-              "right",
             ];
             let closestPos: "top" | "bottom" | "left" | "right" = "top";
             let minDistance = Infinity;
@@ -310,14 +331,6 @@ function DraggableNode({
   );
   const bottomPanResponder = useMemo(
     () => createConnectionPanResponder("bottom"),
-    []
-  );
-  const leftPanResponder = useMemo(
-    () => createConnectionPanResponder("left"),
-    []
-  );
-  const rightPanResponder = useMemo(
-    () => createConnectionPanResponder("right"),
     []
   );
 
@@ -570,32 +583,6 @@ function DraggableNode({
     return {};
   };
 
-  const getConnectionLeftStyle = () => {
-    if (node.type === "oval") {
-      return { left: 5 };
-    }
-    if (node.type === "diamond") {
-      return { left: -20, top: 30, marginTop: 0 };
-    }
-    if (node.type === "hexagon") {
-      return { left: -8 };
-    }
-    return {};
-  };
-
-  const getConnectionRightStyle = () => {
-    if (node.type === "oval") {
-      return { right: 5 };
-    }
-    if (node.type === "diamond") {
-      return { right: -20, top: 30, marginTop: 0 };
-    }
-    if (node.type === "hexagon") {
-      return { right: -8 };
-    }
-    return {};
-  };
-
   return (
     <Animated.View
       style={[styles.nodeContainer, animatedStyle, getNodeContainerStyle()]}
@@ -620,30 +607,14 @@ function DraggableNode({
         ]}
         {...bottomPanResponder.panHandlers}
       />
-      <View
-        style={[
-          styles.connectionPoint,
-          styles.connectionLeft,
-          getConnectionLeftStyle(),
-          isConnecting && !isSourceNode && styles.connectionPointActive,
-        ]}
-        {...leftPanResponder.panHandlers}
-      />
-      <View
-        style={[
-          styles.connectionPoint,
-          styles.connectionRight,
-          getConnectionRightStyle(),
-          isConnecting && !isSourceNode && styles.connectionPointActive,
-        ]}
-        {...rightPanResponder.panHandlers}
-      />
     </Animated.View>
   );
 }
 export default function FlowchartCanvas() {
   const insets = useSafeAreaInsets();
   const [nodes, setNodes] = useState<Node[]>([]);
+  const [showNodeModal, setShowNodeModal] = useState(false);
+  const [showOptionsMenu, setShowOptionsMenu] = useState(false);
   const [nodeCounter, setNodeCounter] = useState(1);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [connectingFrom, setConnectingFrom] = useState<{
@@ -900,7 +871,6 @@ export default function FlowchartCanvas() {
   };
 
   // Modal state for node type selection
-  const [showNodeModal, setShowNodeModal] = useState(false);
 
   // Node type options
   const nodeTypes: { type: NodeType; label: string; icon: string }[] = [
@@ -926,6 +896,57 @@ export default function FlowchartCanvas() {
     setNodeCounter(newCounter);
     saveToHistory(newNodes, edges, newCounter);
     setShowNodeModal(false);
+  };
+
+  // Handle double tap on connection point to add new node
+  const handleConnectionPointDoubleTap = (
+    nodeId: string,
+    position: "top" | "bottom" | "left" | "right"
+  ) => {
+    const sourceNode = nodes.find((n) => n.id === nodeId);
+    if (!sourceNode) return;
+
+    const { height } = getNodeDimensions(sourceNode);
+    const gap = 100; // Distance between nodes
+
+    // Calculate new node position
+    let newX = sourceNode.x;
+    let newY = sourceNode.y;
+
+    if (position === "top") {
+      newY = sourceNode.y - NODE_HEIGHT - gap;
+    } else if (position === "bottom") {
+      newY = sourceNode.y + height + gap;
+    } else {
+      // Should not happen as we restricted to top/bottom, but for safety
+      return;
+    }
+
+    const newNodeId = `${nodeCounter}`;
+    const newNode: Node = {
+      id: newNodeId,
+      x: newX,
+      y: newY,
+      label: `Node ${nodeCounter}`,
+      type: "rectangle",
+    };
+
+    const newEdge: Edge = {
+      id: `e${sourceNode.id}-${newNodeId}`,
+      sourceId: sourceNode.id,
+      targetId: newNodeId,
+      sourcePosition: position,
+      targetPosition: position === "top" ? "bottom" : "top",
+    };
+
+    const newNodes = [...nodes, newNode];
+    const newEdges = [...edges, newEdge];
+    const newCounter = nodeCounter + 1;
+
+    setNodes(newNodes);
+    setEdges(newEdges);
+    setNodeCounter(newCounter);
+    saveToHistory(newNodes, newEdges, newCounter);
   };
 
   const moveNode = (id: string, x: number, y: number) => {
@@ -1040,8 +1061,15 @@ export default function FlowchartCanvas() {
           <TouchableOpacity style={styles.headerButton} onPress={zoomOut}>
             <Text style={styles.headerButtonText}>🔍-</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.headerButton} onPress={resetView}>
-            <Text style={styles.headerButtonText}>⟳</Text>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => setShowOptionsMenu(true)}
+          >
+            <MaterialCommunityIcons
+              name="dots-vertical"
+              size={24}
+              color="white"
+            />
           </TouchableOpacity>
         </View>
       </View>
@@ -1220,6 +1248,7 @@ export default function FlowchartCanvas() {
               onConnectionDragMove={handleConnectionDragMove}
               onConnectionDragEnd={handleConnectionDragEnd}
               onConnectionDragCancel={cancelConnectionDrag}
+              onConnectionPointDoubleTap={handleConnectionPointDoubleTap}
               isConnecting={connectingFrom !== null}
               connectingNodeId={connectingFrom?.nodeId || null}
               allNodes={nodes}
@@ -1306,6 +1335,168 @@ export default function FlowchartCanvas() {
               onPress={() => setShowNodeModal(false)}
             >
               <Text style={styles.modalBackText}>Back</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Options Menu Modal */}
+      <Modal
+        visible={showOptionsMenu}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowOptionsMenu(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowOptionsMenu(false)}
+        >
+          <View style={styles.optionsMenuContainer}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                resetView();
+                setShowOptionsMenu(false);
+              }}
+            >
+              <MaterialCommunityIcons
+                name="arrow-expand-all"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Reset Zoom</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="grid"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Grid Settings</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="pencil"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Change Defaults</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="image"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Export Image</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="download"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Export FCD</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="upload"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Import FCD</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="refresh"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Default Chart</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setNodes([]);
+                setEdges([]);
+                setNodeCounter(1);
+                setShowOptionsMenu(false);
+              }}
+            >
+              <MaterialCommunityIcons
+                name="delete"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Clear Chart</Text>
+            </TouchableOpacity>
+
+            <View style={styles.menuSeparator} />
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="youtube"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>YouTube Channel</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="instagram"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Instagram Page</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="star-circle"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Upgrade to Pro</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="store"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>More Apps</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem}>
+              <MaterialCommunityIcons
+                name="star"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Rate App</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1734,5 +1925,37 @@ const styles = StyleSheet.create({
   },
   undoRedoTextDisabled: {
     color: "#CCCCCC",
+  },
+  optionsMenuContainer: {
+    position: "absolute",
+    top: 50,
+    right: 10,
+    backgroundColor: "white",
+    borderRadius: 8,
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    paddingVertical: 10,
+    width: 250,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  menuIcon: {
+    marginRight: 15,
+  },
+  menuText: {
+    fontSize: 16,
+    color: "#333",
+  },
+  menuSeparator: {
+    height: 1,
+    backgroundColor: "#eee",
+    marginVertical: 5,
   },
 });
