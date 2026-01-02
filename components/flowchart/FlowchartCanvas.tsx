@@ -3,10 +3,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Dimensions,
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
   PanResponder,
+  Platform,
+  ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -18,6 +23,58 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Ellipse, Line, Polygon, Rect } from "react-native-svg";
+
+// Color palette for picker
+const COLOR_PALETTE = [
+  // Row 1 - Reds to Oranges
+  "#FF0000",
+  "#FF3300",
+  "#FF6600",
+  "#FF9900",
+  "#FFCC00",
+  "#FFFF00",
+  // Row 2 - Yellows to Greens
+  "#CCFF00",
+  "#99FF00",
+  "#66FF00",
+  "#33FF00",
+  "#00FF00",
+  "#00FF33",
+  // Row 3 - Greens to Cyans
+  "#00FF66",
+  "#00FF99",
+  "#00FFCC",
+  "#00FFFF",
+  "#00CCFF",
+  "#0099FF",
+  // Row 4 - Blues
+  "#0066FF",
+  "#0033FF",
+  "#0000FF",
+  "#3300FF",
+  "#6600FF",
+  "#9900FF",
+  // Row 5 - Purples to Magentas
+  "#CC00FF",
+  "#FF00FF",
+  "#FF00CC",
+  "#FF0099",
+  "#FF0066",
+  "#FF0033",
+  // Row 6 - Grayscale
+  "#FFFFFF",
+  "#E0E0E0",
+  "#C0C0C0",
+  "#A0A0A0",
+  "#808080",
+  "#606060",
+  "#404040",
+  "#202020",
+  "#000000",
+  "#F5F5F5",
+  "#FAFAFA",
+  "#EEEEEE",
+];
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const GRID_SIZE = 20;
@@ -58,6 +115,7 @@ interface DraggableNodeProps {
   onMove: (id: string, x: number, y: number) => void;
   onDragging: (id: string, x: number, y: number) => void;
   onDragEnd: (id: string) => void;
+  onLabelChange: (id: string, label: string) => void;
   onConnectionPointTap: (
     nodeId: string,
     position: "top" | "bottom" | "left" | "right"
@@ -87,6 +145,7 @@ function DraggableNode({
   onMove,
   onDragging,
   onDragEnd,
+  onLabelChange,
   onConnectionPointTap,
   onConnectionDragStart,
   onConnectionDragMove,
@@ -150,8 +209,14 @@ function DraggableNode({
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => !isDraggingConnectionRef.current,
-        onMoveShouldSetPanResponder: () => !isDraggingConnectionRef.current,
+        // Don't claim touch on start - allows TextInput to receive focus
+        onStartShouldSetPanResponder: () => false,
+        // Only claim touch when actual movement occurs
+        onMoveShouldSetPanResponder: (_, gestureState) => {
+          if (isDraggingConnectionRef.current) return false;
+          // Only claim if there's significant movement (5px threshold)
+          return Math.abs(gestureState.dx) > 5 || Math.abs(gestureState.dy) > 5;
+        },
         onStartShouldSetPanResponderCapture: () => false,
         onMoveShouldSetPanResponderCapture: () => false,
         onPanResponderTerminationRequest: () => false,
@@ -507,9 +572,16 @@ function DraggableNode({
               strokeWidth="2"
             />
           </Svg>
-          <Text style={[styles.nodeText, { marginTop: 10 }]} numberOfLines={2}>
-            {node.label}
-          </Text>
+          <TextInput
+            style={[styles.nodeText, styles.nodeTextInput, { marginTop: 10 }]}
+            value={node.label}
+            onChangeText={(text) => onLabelChange(node.id, text)}
+            multiline
+            numberOfLines={2}
+            textAlign="center"
+            blurOnSubmit={false}
+            selectTextOnFocus
+          />
         </View>
       );
     }
@@ -539,9 +611,16 @@ function DraggableNode({
               strokeWidth="2"
             />
           </Svg>
-          <Text style={styles.nodeText} numberOfLines={2}>
-            {node.label}
-          </Text>
+          <TextInput
+            style={[styles.nodeText, styles.nodeTextInput]}
+            value={node.label}
+            onChangeText={(text) => onLabelChange(node.id, text)}
+            multiline
+            numberOfLines={2}
+            textAlign="center"
+            blurOnSubmit={false}
+            selectTextOnFocus
+          />
         </View>
       );
     }
@@ -552,9 +631,16 @@ function DraggableNode({
         {...panResponder.panHandlers}
       >
         <View style={[styles.nodeDragArea, getTextContainerStyle()]}>
-          <Text style={styles.nodeText} numberOfLines={2}>
-            {node.label}
-          </Text>
+          <TextInput
+            style={[styles.nodeText, styles.nodeTextInput]}
+            value={node.label}
+            onChangeText={(text) => onLabelChange(node.id, text)}
+            multiline
+            numberOfLines={2}
+            textAlign="center"
+            blurOnSubmit={false}
+            selectTextOnFocus
+          />
         </View>
       </View>
     );
@@ -635,6 +721,40 @@ export default function FlowchartCanvas() {
   } | null>(null);
   // Track current scale for gesture compensation
   const [currentScale, setCurrentScale] = useState(1);
+
+  // Grid Settings State
+  const [showGridSettings, setShowGridSettings] = useState(false);
+  const [gridBackgroundColor, setGridBackgroundColor] = useState("#FFFFFF");
+  const [gridColor, setGridColor] = useState("#eee");
+  const [gridWidth, setGridWidth] = useState("1"); // Use string for TextInput handling
+  const [connectionColor, setConnectionColor] = useState("#4A9EE0"); // Connection/edge color
+
+  // Color Picker State
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [activeColorType, setActiveColorType] = useState<
+    "background" | "grid" | "connection" | null
+  >(null);
+  const [tempPickerColor, setTempPickerColor] = useState("#FFFFFF");
+
+  const openColorPicker = (
+    type: "background" | "grid" | "connection",
+    currentColor: string
+  ) => {
+    setActiveColorType(type);
+    setTempPickerColor(currentColor);
+    setShowColorPicker(true);
+  };
+
+  const handleColorSelect = (color: string) => {
+    if (activeColorType === "background") {
+      setGridBackgroundColor(color);
+    } else if (activeColorType === "grid") {
+      setGridColor(color);
+    } else if (activeColorType === "connection") {
+      setConnectionColor(color);
+    }
+    setShowColorPicker(false);
+  };
 
   // Undo/Redo history
   type HistoryState = { nodes: Node[]; edges: Edge[]; nodeCounter: number };
@@ -898,6 +1018,14 @@ export default function FlowchartCanvas() {
     setShowNodeModal(false);
   };
 
+  // Handle label change for editable node text
+  const handleLabelChange = (nodeId: string, newLabel: string) => {
+    const newNodes = nodes.map((node) =>
+      node.id === nodeId ? { ...node, label: newLabel } : node
+    );
+    setNodes(newNodes);
+  };
+
   // Handle double tap on connection point to add new node
   const handleConnectionPointDoubleTap = (
     nodeId: string,
@@ -999,11 +1127,14 @@ export default function FlowchartCanvas() {
       horizontalLines.push(
         <View
           key={`h-${i}`}
-          style={[
-            styles.gridLine,
-            styles.horizontalLine,
-            { top: i * GRID_SIZE },
-          ]}
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: i * GRID_SIZE,
+            height: parseFloat(gridWidth) || 1,
+            backgroundColor: gridColor,
+          }}
         />
       );
     }
@@ -1012,11 +1143,14 @@ export default function FlowchartCanvas() {
       verticalLines.push(
         <View
           key={`v-${i}`}
-          style={[
-            styles.gridLine,
-            styles.verticalLine,
-            { left: i * GRID_SIZE },
-          ]}
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: i * GRID_SIZE,
+            width: parseFloat(gridWidth) || 1,
+            backgroundColor: gridColor,
+          }}
         />
       );
     }
@@ -1049,8 +1183,67 @@ export default function FlowchartCanvas() {
     savedTranslateY.value = initialY;
   };
 
+  // Fit all nodes in view
+  const fitToAllNodes = () => {
+    if (nodes.length === 0) {
+      resetView();
+      return;
+    }
+
+    // Calculate bounding box of all nodes (in canvas coordinates)
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    nodes.forEach((node) => {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + NODE_WIDTH);
+      maxY = Math.max(maxY, node.y + NODE_HEIGHT);
+    });
+
+    // Calculate bounding box dimensions
+    const nodesWidth = maxX - minX;
+    const nodesHeight = maxY - minY;
+
+    // Screen available area
+    const headerHeight = insets.top + 60;
+    const bottomPadding = 120;
+    const sidePadding = 20;
+    const availableWidth = SCREEN_WIDTH - sidePadding * 2;
+    const availableHeight = SCREEN_HEIGHT - headerHeight - bottomPadding;
+
+    // Calculate scale to fit all nodes with some padding
+    const paddingFactor = 0.9; // 90% of available space
+    const scaleX = (availableWidth * paddingFactor) / nodesWidth;
+    const scaleY = (availableHeight * paddingFactor) / nodesHeight;
+    const newScale = Math.max(Math.min(scaleX, scaleY, MAX_SCALE), MIN_SCALE);
+
+    // Calculate the center of the nodes bounding box (in canvas coordinates)
+    const nodesCenterX = minX + nodesWidth / 2;
+    const nodesCenterY = minY + nodesHeight / 2;
+
+    // Calculate where screen center should be (accounting for header)
+    const screenCenterX = SCREEN_WIDTH / 2;
+    const screenCenterY = headerHeight + availableHeight / 2;
+
+    // Translation: move so that nodes center aligns with screen center
+    const newTranslateX = screenCenterX - nodesCenterX * newScale;
+    const newTranslateY = screenCenterY - nodesCenterY * newScale;
+
+    scale.value = withSpring(newScale);
+    savedScale.value = newScale;
+    setCurrentScale(newScale);
+    translateX.value = withSpring(newTranslateX);
+    translateY.value = withSpring(newTranslateY);
+    savedTranslateX.value = newTranslateX;
+    savedTranslateY.value = newTranslateY;
+  };
+
   return (
-    <GestureHandlerRootView style={styles.container}>
+    <GestureHandlerRootView
+      style={[styles.container, { backgroundColor: gridBackgroundColor }]}
+    >
       {/* Header with Safe Area */}
       <View style={[styles.header, { paddingTop: insets.top }]}>
         <Text style={styles.headerTitle}>Flowchart Creator</Text>
@@ -1074,189 +1267,197 @@ export default function FlowchartCanvas() {
         </View>
       </View>
 
-      {/* Zoomable/Pannable Canvas */}
-      <View style={styles.canvasContainer}>
-        <Animated.View
-          style={[styles.canvas, canvasAnimatedStyle]}
-          {...canvasPanResponder.panHandlers}
-        >
-          {/* Bezier curve edges */}
-          {edges.map((edge) => {
-            const sourceNode = nodes.find((n) => n.id === edge.sourceId);
-            const targetNode = nodes.find((n) => n.id === edge.targetId);
-            if (!sourceNode || !targetNode) return null;
+      {/* Zoomable/Pannable Canvas with Keyboard Avoiding */}
+      <KeyboardAvoidingView
+        style={styles.canvasContainer}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={insets.top + 56}
+      >
+        <View style={{ flex: 1 }}>
+          <Animated.View
+            style={[styles.canvas, canvasAnimatedStyle]}
+            {...canvasPanResponder.panHandlers}
+            onTouchStart={() => Keyboard.dismiss()}
+          >
+            {/* Bezier curve edges */}
+            {edges.map((edge) => {
+              const sourceNode = nodes.find((n) => n.id === edge.sourceId);
+              const targetNode = nodes.find((n) => n.id === edge.targetId);
+              if (!sourceNode || !targetNode) return null;
 
-            // Use dragging position if this node is being dragged
-            const sourceOverride =
-              draggingNode?.id === sourceNode.id
-                ? { x: draggingNode.x, y: draggingNode.y }
-                : undefined;
-            const targetOverride =
-              draggingNode?.id === targetNode.id
-                ? { x: draggingNode.x, y: draggingNode.y }
-                : undefined;
+              // Use dragging position if this node is being dragged
+              const sourceOverride =
+                draggingNode?.id === sourceNode.id
+                  ? { x: draggingNode.x, y: draggingNode.y }
+                  : undefined;
+              const targetOverride =
+                draggingNode?.id === targetNode.id
+                  ? { x: draggingNode.x, y: draggingNode.y }
+                  : undefined;
 
-            const start = getConnectionPoint(
-              sourceNode,
-              edge.sourcePosition,
-              sourceOverride
-            );
-            const end = getConnectionPoint(
-              targetNode,
-              edge.targetPosition,
-              targetOverride
-            );
-
-            // Calculate control points for smooth bezier curve
-            const distance = Math.sqrt(
-              Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2)
-            );
-            const curveOffset = Math.min(distance * 0.5, 80); // Curve intensity
-
-            // Control points based on connection positions
-            let cp1 = { x: start.x, y: start.y };
-            let cp2 = { x: end.x, y: end.y };
-
-            // Adjust control points based on source position
-            switch (edge.sourcePosition) {
-              case "top":
-                cp1 = { x: start.x, y: start.y - curveOffset };
-                break;
-              case "bottom":
-                cp1 = { x: start.x, y: start.y + curveOffset };
-                break;
-              case "left":
-                cp1 = { x: start.x - curveOffset, y: start.y };
-                break;
-              case "right":
-                cp1 = { x: start.x + curveOffset, y: start.y };
-                break;
-            }
-
-            // Adjust control points based on target position
-            switch (edge.targetPosition) {
-              case "top":
-                cp2 = { x: end.x, y: end.y - curveOffset };
-                break;
-              case "bottom":
-                cp2 = { x: end.x, y: end.y + curveOffset };
-                break;
-              case "left":
-                cp2 = { x: end.x - curveOffset, y: end.y };
-                break;
-              case "right":
-                cp2 = { x: end.x + curveOffset, y: end.y };
-                break;
-            }
-
-            // Generate bezier curve points
-            const segments = 20;
-            const curveSegments = [];
-
-            for (let i = 0; i < segments; i++) {
-              const t1 = i / segments;
-              const t2 = (i + 1) / segments;
-
-              // Cubic bezier formula
-              const getPoint = (t: number) => {
-                const mt = 1 - t;
-                return {
-                  x:
-                    mt * mt * mt * start.x +
-                    3 * mt * mt * t * cp1.x +
-                    3 * mt * t * t * cp2.x +
-                    t * t * t * end.x,
-                  y:
-                    mt * mt * mt * start.y +
-                    3 * mt * mt * t * cp1.y +
-                    3 * mt * t * t * cp2.y +
-                    t * t * t * end.y,
-                };
-              };
-
-              const p1 = getPoint(t1);
-              const p2 = getPoint(t2);
-
-              const segDx = p2.x - p1.x;
-              const segDy = p2.y - p1.y;
-              const segLength = Math.sqrt(segDx * segDx + segDy * segDy);
-              const segAngle = Math.atan2(segDy, segDx) * (180 / Math.PI);
-
-              curveSegments.push(
-                <View
-                  key={`${edge.id}-seg-${i}`}
-                  style={{
-                    position: "absolute",
-                    left: p1.x,
-                    top: p1.y - 1,
-                    width: segLength + 1, // +1 to prevent gaps
-                    height: 2,
-                    backgroundColor: "#4A9EE0",
-                    transformOrigin: "left center",
-                    transform: [{ rotate: `${segAngle}deg` }],
-                  }}
-                />
+              const start = getConnectionPoint(
+                sourceNode,
+                edge.sourcePosition,
+                sourceOverride
               );
-            }
+              const end = getConnectionPoint(
+                targetNode,
+                edge.targetPosition,
+                targetOverride
+              );
 
-            return (
-              <React.Fragment key={edge.id}>{curveSegments}</React.Fragment>
-            );
-          })}
+              // Calculate control points for smooth bezier curve
+              const distance = Math.sqrt(
+                Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2)
+              );
+              const curveOffset = Math.min(distance * 0.5, 80); // Curve intensity
 
-          {/* Drag line - shows while dragging from connection point */}
-          {dragLine && (
-            <View
-              style={{
-                position: "absolute",
-                left: dragLine.startX,
-                top: dragLine.startY - 1,
-                width: Math.sqrt(
-                  Math.pow(dragLine.endX - dragLine.startX, 2) +
-                    Math.pow(dragLine.endY - dragLine.startY, 2)
-                ),
-                height: 2,
-                backgroundColor: "#FF6B6B",
-                transformOrigin: "left center",
-                transform: [
-                  {
-                    rotate: `${
-                      Math.atan2(
-                        dragLine.endY - dragLine.startY,
-                        dragLine.endX - dragLine.startX
-                      ) *
-                      (180 / Math.PI)
-                    }deg`,
-                  },
-                ],
-              }}
-            />
-          )}
+              // Control points based on connection positions
+              let cp1 = { x: start.x, y: start.y };
+              let cp2 = { x: end.x, y: end.y };
 
-          {renderGrid()}
+              // Adjust control points based on source position
+              switch (edge.sourcePosition) {
+                case "top":
+                  cp1 = { x: start.x, y: start.y - curveOffset };
+                  break;
+                case "bottom":
+                  cp1 = { x: start.x, y: start.y + curveOffset };
+                  break;
+                case "left":
+                  cp1 = { x: start.x - curveOffset, y: start.y };
+                  break;
+                case "right":
+                  cp1 = { x: start.x + curveOffset, y: start.y };
+                  break;
+              }
 
-          {/* Nodes */}
-          {nodes.map((node) => (
-            <DraggableNode
-              key={node.id}
-              node={node}
-              onMove={moveNode}
-              onDragging={handleNodeDragging}
-              onDragEnd={handleNodeDragEnd}
-              onConnectionPointTap={handleConnectionPointTap}
-              onConnectionDragStart={handleConnectionDragStart}
-              onConnectionDragMove={handleConnectionDragMove}
-              onConnectionDragEnd={handleConnectionDragEnd}
-              onConnectionDragCancel={cancelConnectionDrag}
-              onConnectionPointDoubleTap={handleConnectionPointDoubleTap}
-              isConnecting={connectingFrom !== null}
-              connectingNodeId={connectingFrom?.nodeId || null}
-              allNodes={nodes}
-              canvasScale={currentScale}
-            />
-          ))}
-        </Animated.View>
-      </View>
+              // Adjust control points based on target position
+              switch (edge.targetPosition) {
+                case "top":
+                  cp2 = { x: end.x, y: end.y - curveOffset };
+                  break;
+                case "bottom":
+                  cp2 = { x: end.x, y: end.y + curveOffset };
+                  break;
+                case "left":
+                  cp2 = { x: end.x - curveOffset, y: end.y };
+                  break;
+                case "right":
+                  cp2 = { x: end.x + curveOffset, y: end.y };
+                  break;
+              }
+
+              // Generate bezier curve points
+              const segments = 20;
+              const curveSegments = [];
+
+              for (let i = 0; i < segments; i++) {
+                const t1 = i / segments;
+                const t2 = (i + 1) / segments;
+
+                // Cubic bezier formula
+                const getPoint = (t: number) => {
+                  const mt = 1 - t;
+                  return {
+                    x:
+                      mt * mt * mt * start.x +
+                      3 * mt * mt * t * cp1.x +
+                      3 * mt * t * t * cp2.x +
+                      t * t * t * end.x,
+                    y:
+                      mt * mt * mt * start.y +
+                      3 * mt * mt * t * cp1.y +
+                      3 * mt * t * t * cp2.y +
+                      t * t * t * end.y,
+                  };
+                };
+
+                const p1 = getPoint(t1);
+                const p2 = getPoint(t2);
+
+                const segDx = p2.x - p1.x;
+                const segDy = p2.y - p1.y;
+                const segLength = Math.sqrt(segDx * segDx + segDy * segDy);
+                const segAngle = Math.atan2(segDy, segDx) * (180 / Math.PI);
+
+                curveSegments.push(
+                  <View
+                    key={`${edge.id}-seg-${i}`}
+                    style={{
+                      position: "absolute",
+                      left: p1.x,
+                      top: p1.y - 1,
+                      width: segLength + 1, // +1 to prevent gaps
+                      height: 2,
+                      backgroundColor: connectionColor,
+                      transformOrigin: "left center",
+                      transform: [{ rotate: `${segAngle}deg` }],
+                    }}
+                  />
+                );
+              }
+
+              return (
+                <React.Fragment key={edge.id}>{curveSegments}</React.Fragment>
+              );
+            })}
+
+            {/* Drag line - shows while dragging from connection point */}
+            {dragLine && (
+              <View
+                style={{
+                  position: "absolute",
+                  left: dragLine.startX,
+                  top: dragLine.startY - 1,
+                  width: Math.sqrt(
+                    Math.pow(dragLine.endX - dragLine.startX, 2) +
+                      Math.pow(dragLine.endY - dragLine.startY, 2)
+                  ),
+                  height: 2,
+                  backgroundColor: "#FF6B6B",
+                  transformOrigin: "left center",
+                  transform: [
+                    {
+                      rotate: `${
+                        Math.atan2(
+                          dragLine.endY - dragLine.startY,
+                          dragLine.endX - dragLine.startX
+                        ) *
+                        (180 / Math.PI)
+                      }deg`,
+                    },
+                  ],
+                }}
+              />
+            )}
+
+            {renderGrid()}
+
+            {/* Nodes */}
+            {nodes.map((node) => (
+              <DraggableNode
+                key={node.id}
+                node={node}
+                onMove={moveNode}
+                onDragging={handleNodeDragging}
+                onDragEnd={handleNodeDragEnd}
+                onLabelChange={handleLabelChange}
+                onConnectionPointTap={handleConnectionPointTap}
+                onConnectionDragStart={handleConnectionDragStart}
+                onConnectionDragMove={handleConnectionDragMove}
+                onConnectionDragEnd={handleConnectionDragEnd}
+                onConnectionDragCancel={cancelConnectionDrag}
+                onConnectionPointDoubleTap={handleConnectionPointDoubleTap}
+                isConnecting={connectingFrom !== null}
+                connectingNodeId={connectingFrom?.nodeId || null}
+                allNodes={nodes}
+                canvasScale={currentScale}
+              />
+            ))}
+          </Animated.View>
+        </View>
+      </KeyboardAvoidingView>
 
       {/* Undo/Redo Controls */}
       <View style={styles.undoRedoContainer}>
@@ -1369,7 +1570,29 @@ export default function FlowchartCanvas() {
               <Text style={styles.menuText}>Reset Zoom</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.menuItem}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                fitToAllNodes();
+                setShowOptionsMenu(false);
+              }}
+            >
+              <MaterialCommunityIcons
+                name="fit-to-screen"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Fit All Nodes</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowGridSettings(true);
+                setShowOptionsMenu(false);
+              }}
+            >
               <MaterialCommunityIcons
                 name="grid"
                 size={24}
@@ -1501,6 +1724,163 @@ export default function FlowchartCanvas() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Grid Settings Modal */}
+      <Modal
+        visible={showGridSettings}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          if (showColorPicker) {
+            setShowColorPicker(false);
+          } else {
+            setShowGridSettings(false);
+          }
+        }}
+      >
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => {
+              if (showColorPicker) {
+                setShowColorPicker(false);
+              } else {
+                setShowGridSettings(false);
+              }
+            }}
+          >
+            {showColorPicker ? (
+              <View
+                style={styles.colorPickerContainer}
+                onStartShouldSetResponder={() => true}
+              >
+                <Text style={styles.modalTitle}>
+                  Pick{" "}
+                  {activeColorType === "background"
+                    ? "Background"
+                    : activeColorType === "grid"
+                    ? "Grid"
+                    : "Connection"}{" "}
+                  Color
+                </Text>
+
+                {/* Current color preview */}
+                <View style={styles.previewContainer}>
+                  <View
+                    style={[
+                      styles.colorPreviewLarge,
+                      { backgroundColor: tempPickerColor },
+                    ]}
+                  />
+                  <Text style={styles.hexText}>{tempPickerColor}</Text>
+                </View>
+
+                {/* Color palette grid */}
+                <ScrollView
+                  style={styles.colorPaletteScroll}
+                  contentContainerStyle={styles.colorPaletteGrid}
+                >
+                  {COLOR_PALETTE.map((color, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={[
+                        styles.colorPaletteItem,
+                        { backgroundColor: color },
+                        tempPickerColor === color &&
+                          styles.colorPaletteItemSelected,
+                      ]}
+                      onPress={() => setTempPickerColor(color)}
+                    />
+                  ))}
+                </ScrollView>
+
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      handleColorSelect(tempPickerColor);
+                    }}
+                  >
+                    <Text style={styles.resetButtonText}>Select</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setShowColorPicker(false)}>
+                    <Text style={styles.backButtonText}>Back</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.settingsModalContent}>
+                <Text style={styles.modalTitle}>Grid Settings</Text>
+
+                <View style={styles.settingRow}>
+                  <Text style={styles.settingLabel}>Background Color</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.colorPreview,
+                      { backgroundColor: gridBackgroundColor },
+                    ]}
+                    onPress={() =>
+                      openColorPicker("background", gridBackgroundColor)
+                    }
+                  />
+                </View>
+
+                <View style={styles.settingRow}>
+                  <Text style={styles.settingLabel}>Grid Color</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.colorPreview,
+                      { backgroundColor: gridColor },
+                    ]}
+                    onPress={() => openColorPicker("grid", gridColor)}
+                  />
+                </View>
+
+                <View style={styles.settingRow}>
+                  <Text style={styles.settingLabel}>Connection Color</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.colorPreview,
+                      { backgroundColor: connectionColor },
+                    ]}
+                    onPress={() =>
+                      openColorPicker("connection", connectionColor)
+                    }
+                  />
+                </View>
+
+                <View style={styles.settingRow}>
+                  <Text style={styles.settingLabel}>Grid Width</Text>
+                  <TextInput
+                    style={styles.settingInput}
+                    value={gridWidth}
+                    onChangeText={setGridWidth}
+                    keyboardType="numeric"
+                    maxLength={3}
+                  />
+                </View>
+
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      // Reset defaults
+                      setGridBackgroundColor("#FFFFFF");
+                      setGridColor("#eee");
+                      setGridWidth("1");
+                      setConnectionColor("#4A9EE0");
+                    }}
+                  >
+                    <Text style={styles.resetButtonText}>Reset</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setShowGridSettings(false)}>
+                    <Text style={styles.backButtonText}>Back</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </TouchableOpacity>
+        </GestureHandlerRootView>
+      </Modal>
     </GestureHandlerRootView>
   );
 }
@@ -1508,7 +1888,8 @@ export default function FlowchartCanvas() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    // Background color is handled dynamically in the component now,
+    // but we keep a default here or override it in style prop
   },
   header: {
     minHeight: 56,
@@ -1543,13 +1924,13 @@ const styles = StyleSheet.create({
   canvas: {
     width: CANVAS_SIZE,
     height: CANVAS_SIZE,
-    backgroundColor: "#FAFAFA",
+    backgroundColor: "transparent",
     position: "relative",
   },
   canvasContainer: {
     flex: 1,
     overflow: "hidden",
-    backgroundColor: "#FAFAFA",
+    backgroundColor: "transparent",
   },
   gridLine: {
     position: "absolute",
@@ -1592,6 +1973,13 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     textAlign: "center",
     paddingHorizontal: 4,
+  },
+  nodeTextInput: {
+    flex: 1,
+    minWidth: 50,
+    maxWidth: "90%",
+    backgroundColor: "transparent",
+    padding: 2,
   },
   nodeDragArea: {
     flex: 1,
@@ -1957,5 +2345,120 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: "#eee",
     marginVertical: 5,
+  },
+  settingsModalContent: {
+    backgroundColor: "white",
+    borderRadius: 8,
+    padding: 20,
+    width: 300,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  settingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 20,
+  },
+  settingLabel: {
+    fontSize: 16,
+    color: "#333",
+  },
+  colorPreview: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: "#ddd",
+  },
+  settingInput: {
+    width: 60,
+    borderBottomWidth: 1,
+    borderBottomColor: "#ddd",
+    textAlign: "center",
+    fontSize: 16,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 20,
+    marginTop: 10,
+  },
+  resetButtonText: {
+    color: "#4A9EE0",
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  backButtonText: {
+    color: "#4A9EE0",
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  colorPickerContainer: {
+    backgroundColor: "white",
+    borderRadius: 8,
+    padding: 20,
+    width: 320,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    alignItems: "center",
+  },
+  colorPanel: {
+    width: "100%",
+    height: 180,
+    borderRadius: 12,
+  },
+  slider: {
+    borderRadius: 12,
+    height: 30,
+    width: "100%",
+  },
+  previewContainer: {
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 10,
+  },
+  colorPreviewLarge: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: "#ddd",
+  },
+  hexText: {
+    fontSize: 16,
+    fontFamily: "monospace",
+    color: "#333",
+  },
+  colorPaletteScroll: {
+    maxHeight: 200,
+    width: "100%",
+    marginVertical: 15,
+  },
+  colorPaletteGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 10,
+  },
+  colorPaletteItem: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: "#ddd",
+  },
+  colorPaletteItemSelected: {
+    borderColor: "#4A9EE0",
+    borderWidth: 3,
+    transform: [{ scale: 1.1 }],
   },
 });
