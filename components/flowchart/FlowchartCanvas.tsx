@@ -2,6 +2,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Dimensions,
   Keyboard,
   KeyboardAvoidingView,
@@ -23,6 +24,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Ellipse, Line, Polygon, Rect } from "react-native-svg";
+import { Language, translations } from "./translations";
 
 // Color palette for picker
 const COLOR_PALETTE = [
@@ -86,6 +88,22 @@ const NODE_WIDTH = 150;
 const NODE_HEIGHT = 50;
 const FLOWCHART_STATE_KEY = "FLOWCHART_STATE_V1";
 
+// Helper to get node dimensions based on type
+const getNodeDimensions = (node: { type: string }) => {
+  switch (node.type) {
+    case "diamond":
+      return { width: 80, height: 80 };
+    case "oval":
+      return { width: 130, height: 70 };
+    case "hexagon":
+      return { width: 140, height: 80 };
+    case "storage":
+      return { width: 100, height: 85 };
+    default:
+      return { width: NODE_WIDTH, height: NODE_HEIGHT };
+  }
+};
+
 type NodeType =
   | "rectangle"
   | "diamond"
@@ -100,6 +118,15 @@ interface Node {
   y: number;
   label: string;
   type: NodeType;
+  // Text styling
+  isBold?: boolean;
+  fontSize?: number;
+  textColor?: string;
+  // Element styling
+  bgColor?: string;
+  borderColor?: string;
+  borderWidth?: number;
+  elevation?: number;
 }
 
 interface Edge {
@@ -116,6 +143,7 @@ interface DraggableNodeProps {
   onDragging: (id: string, x: number, y: number) => void;
   onDragEnd: (id: string) => void;
   onLabelChange: (id: string, label: string) => void;
+  onNodeTap: (nodeId: string) => void;
   onConnectionPointTap: (
     nodeId: string,
     position: "top" | "bottom" | "left" | "right"
@@ -136,6 +164,7 @@ interface DraggableNodeProps {
   ) => void;
   isConnecting: boolean;
   connectingNodeId: string | null;
+  edges: Edge[];
   allNodes: Node[];
   canvasScale: number;
 }
@@ -146,6 +175,7 @@ function DraggableNode({
   onDragging,
   onDragEnd,
   onLabelChange,
+  onNodeTap,
   onConnectionPointTap,
   onConnectionDragStart,
   onConnectionDragMove,
@@ -154,6 +184,7 @@ function DraggableNode({
   onConnectionPointDoubleTap,
   isConnecting,
   connectingNodeId,
+  edges,
   allNodes,
   canvasScale,
 }: DraggableNodeProps) {
@@ -172,6 +203,7 @@ function DraggableNode({
 
   // Use refs to store latest values without causing re-renders
   const isDraggingConnectionRef = useRef(false);
+  const hasDraggedRef = useRef(false); // Track if actual drag movement occurred
   const allNodesRef = useRef(allNodes);
   allNodesRef.current = allNodes;
 
@@ -188,6 +220,7 @@ function DraggableNode({
     onMove,
     onDragging,
     onDragEnd,
+    onNodeTap,
     onConnectionDragStart,
     onConnectionDragMove,
     onConnectionDragEnd,
@@ -198,6 +231,7 @@ function DraggableNode({
     onMove,
     onDragging,
     onDragEnd,
+    onNodeTap,
     onConnectionDragStart,
     onConnectionDragMove,
     onConnectionDragEnd,
@@ -209,8 +243,8 @@ function DraggableNode({
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        // Don't claim touch on start - allows TextInput to receive focus
-        onStartShouldSetPanResponder: () => false,
+        // Claim touch on start for dragging
+        onStartShouldSetPanResponder: () => true,
         // Only claim touch when actual movement occurs
         onMoveShouldSetPanResponder: (_, gestureState) => {
           if (isDraggingConnectionRef.current) return false;
@@ -221,9 +255,14 @@ function DraggableNode({
         onMoveShouldSetPanResponderCapture: () => false,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: () => {
+          hasDraggedRef.current = false; // Reset drag tracking
           scale.value = withSpring(1.05);
         },
         onPanResponderMove: (_, gestureState) => {
+          // Check if this is actual movement (not just a tap)
+          if (Math.abs(gestureState.dx) > 5 || Math.abs(gestureState.dy) > 5) {
+            hasDraggedRef.current = true;
+          }
           // Divide by scale to get correct canvas coordinates
           const scaledDx = gestureState.dx / canvasScaleRef.current;
           const scaledDy = gestureState.dy / canvasScaleRef.current;
@@ -236,6 +275,17 @@ function DraggableNode({
         },
         onPanResponderRelease: (_, gestureState) => {
           scale.value = withSpring(1);
+
+          // If no significant movement occurred, treat as a tap
+          if (
+            !hasDraggedRef.current &&
+            Math.abs(gestureState.dx) < 5 &&
+            Math.abs(gestureState.dy) < 5
+          ) {
+            callbacksRef.current.onNodeTap(nodeRef.current.id);
+            return;
+          }
+
           const scaledDx = gestureState.dx / canvasScaleRef.current;
           const scaledDy = gestureState.dy / canvasScaleRef.current;
           const newX = nodeRef.current.x + scaledDx;
@@ -246,6 +296,8 @@ function DraggableNode({
       }),
     []
   );
+
+  // Get node dimensions based on type
 
   // Create memoized pan responder for connection point drag
   const createConnectionPanResponder = (
@@ -323,11 +375,15 @@ function DraggableNode({
         for (const otherNode of currentNodes) {
           if (otherNode.id === currentNode.id) continue;
 
+          // Get dimensions for this specific node type
+          const { width: nodeWidth, height: nodeHeight } =
+            getNodeDimensions(otherNode);
+
           // Check if dropped within the other node's bounds (more generous)
           const nodeLeft = otherNode.x - 20;
-          const nodeRight = otherNode.x + NODE_WIDTH + 20;
+          const nodeRight = otherNode.x + nodeWidth + 20;
           const nodeTop = otherNode.y - 20;
-          const nodeBottom = otherNode.y + NODE_HEIGHT + 20;
+          const nodeBottom = otherNode.y + nodeHeight + 20;
 
           if (
             dropX >= nodeLeft &&
@@ -350,15 +406,15 @@ function DraggableNode({
                   (pos === "left"
                     ? 0
                     : pos === "right"
-                    ? NODE_WIDTH
-                    : NODE_WIDTH / 2),
+                    ? nodeWidth
+                    : nodeWidth / 2),
                 y:
                   otherNode.y +
                   (pos === "top"
                     ? 0
                     : pos === "bottom"
-                    ? NODE_HEIGHT
-                    : NODE_HEIGHT / 2),
+                    ? nodeHeight
+                    : nodeHeight / 2),
               };
               const distance = Math.sqrt(
                 Math.pow(dropX - point.x, 2) + Math.pow(dropY - point.y, 2)
@@ -507,7 +563,19 @@ function DraggableNode({
       const bodyBottom = height - ellipseRy;
 
       return (
-        <View style={styles.hexagonWrapper} {...panResponder.panHandlers}>
+        <View
+          style={[
+            styles.hexagonWrapper,
+            {
+              elevation: node.elevation !== undefined ? node.elevation : 0,
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: (node.elevation || 0) / 2 },
+              shadowOpacity: 0.25,
+              shadowRadius: node.elevation || 0,
+            },
+          ]}
+          {...panResponder.panHandlers}
+        >
           <Svg width={width} height={height} style={{ position: "absolute" }}>
             {/* White fill for body */}
             <Rect
@@ -515,7 +583,7 @@ function DraggableNode({
               y={bodyTop}
               width={width - 4}
               height={bodyBottom - bodyTop}
-              fill="#FFFFFF"
+              fill={node.bgColor || "#FFFFFF"}
             />
             {/* Bottom ellipse fill */}
             <Ellipse
@@ -523,7 +591,7 @@ function DraggableNode({
               cy={bodyBottom}
               rx={ellipseRx}
               ry={ellipseRy}
-              fill="#FFFFFF"
+              fill={node.bgColor || "#FFFFFF"}
             />
             {/* Top ellipse fill */}
             <Ellipse
@@ -531,7 +599,7 @@ function DraggableNode({
               cy={bodyTop}
               rx={ellipseRx}
               ry={ellipseRy}
-              fill="#FFFFFF"
+              fill={node.bgColor || "#FFFFFF"}
             />
             {/* Left side line */}
             <Line
@@ -539,8 +607,8 @@ function DraggableNode({
               y1={bodyTop}
               x2={2}
               y2={bodyBottom}
-              stroke="#4A9EE0"
-              strokeWidth="2"
+              stroke={node.borderColor || "#4A9EE0"}
+              strokeWidth={String(node.borderWidth || 2)}
             />
             {/* Right side line */}
             <Line
@@ -548,8 +616,8 @@ function DraggableNode({
               y1={bodyTop}
               x2={width - 2}
               y2={bodyBottom}
-              stroke="#4A9EE0"
-              strokeWidth="2"
+              stroke={node.borderColor || "#4A9EE0"}
+              strokeWidth={String(node.borderWidth || 2)}
             />
             {/* Bottom ellipse border */}
             <Ellipse
@@ -558,8 +626,8 @@ function DraggableNode({
               rx={ellipseRx}
               ry={ellipseRy}
               fill="none"
-              stroke="#4A9EE0"
-              strokeWidth="2"
+              stroke={node.borderColor || "#4A9EE0"}
+              strokeWidth={String(node.borderWidth || 2)}
             />
             {/* Top ellipse border */}
             <Ellipse
@@ -567,21 +635,23 @@ function DraggableNode({
               cy={bodyTop}
               rx={ellipseRx}
               ry={ellipseRy}
-              fill="#FFFFFF"
-              stroke="#4A9EE0"
-              strokeWidth="2"
+              fill={node.bgColor || "#FFFFFF"}
+              stroke={node.borderColor || "#4A9EE0"}
+              strokeWidth={String(node.borderWidth || 2)}
             />
           </Svg>
-          <TextInput
-            style={[styles.nodeText, styles.nodeTextInput, { marginTop: 10 }]}
-            value={node.label}
-            onChangeText={(text) => onLabelChange(node.id, text)}
-            multiline
+          <Text
+            style={[
+              styles.nodeText,
+              { marginTop: 10 },
+              node.isBold && { fontWeight: "bold" },
+              node.fontSize !== undefined && { fontSize: node.fontSize },
+              node.textColor && { color: node.textColor },
+            ]}
             numberOfLines={2}
-            textAlign="center"
-            blurOnSubmit={false}
-            selectTextOnFocus
-          />
+          >
+            {node.label}
+          </Text>
         </View>
       );
     }
@@ -601,46 +671,74 @@ function DraggableNode({
       } ${width * 0.75},${height} ${width * 0.25},${height} 0,${height / 2}`;
 
       return (
-        <View style={styles.hexagonWrapper} {...panResponder.panHandlers}>
+        <View
+          style={[
+            styles.hexagonWrapper,
+            {
+              elevation: node.elevation !== undefined ? node.elevation : 0,
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: (node.elevation || 0) / 2 },
+              shadowOpacity: 0.25,
+              shadowRadius: node.elevation || 0,
+            },
+          ]}
+          {...panResponder.panHandlers}
+        >
           <Svg width={width} height={height} style={{ position: "absolute" }}>
-            <Polygon points={fillPoints} fill="#FFFFFF" />
+            <Polygon points={fillPoints} fill={node.bgColor || "#FFFFFF"} />
             <Polygon
               points={points}
               fill="none"
-              stroke="#4A9EE0"
-              strokeWidth="2"
+              stroke={node.borderColor || "#4A9EE0"}
+              strokeWidth={String(node.borderWidth || 2)}
             />
           </Svg>
-          <TextInput
-            style={[styles.nodeText, styles.nodeTextInput]}
-            value={node.label}
-            onChangeText={(text) => onLabelChange(node.id, text)}
-            multiline
+          <Text
+            style={[
+              styles.nodeText,
+              node.isBold && { fontWeight: "bold" },
+              node.fontSize !== undefined && { fontSize: node.fontSize },
+              node.textColor && { color: node.textColor },
+            ]}
             numberOfLines={2}
-            textAlign="center"
-            blurOnSubmit={false}
-            selectTextOnFocus
-          />
+          >
+            {node.label}
+          </Text>
         </View>
       );
     }
 
     return (
       <View
-        style={[styles.node, getNodeShapeStyle()]}
+        style={[
+          styles.node,
+          getNodeShapeStyle(),
+          node.bgColor && { backgroundColor: node.bgColor },
+          node.borderColor && { borderColor: node.borderColor },
+          node.borderWidth !== undefined && { borderWidth: node.borderWidth },
+          node.elevation !== undefined && {
+            elevation: node.elevation,
+            // iOS shadow properties
+            shadowColor: "#000",
+            shadowOffset: { width: 0, height: node.elevation / 2 },
+            shadowOpacity: 0.25,
+            shadowRadius: node.elevation,
+          },
+        ]}
         {...panResponder.panHandlers}
       >
         <View style={[styles.nodeDragArea, getTextContainerStyle()]}>
-          <TextInput
-            style={[styles.nodeText, styles.nodeTextInput]}
-            value={node.label}
-            onChangeText={(text) => onLabelChange(node.id, text)}
-            multiline
+          <Text
+            style={[
+              styles.nodeText,
+              node.isBold && { fontWeight: "bold" },
+              node.fontSize !== undefined && { fontSize: node.fontSize },
+              node.textColor && { color: node.textColor },
+            ]}
             numberOfLines={2}
-            textAlign="center"
-            blurOnSubmit={false}
-            selectTextOnFocus
-          />
+          >
+            {node.label}
+          </Text>
         </View>
       </View>
     );
@@ -669,6 +767,20 @@ function DraggableNode({
     return {};
   };
 
+  // Check if connection points have outgoing connections
+  const hasTopConnection = edges.some(
+    (e) => e.sourceId === node.id && e.sourcePosition === "top"
+  );
+  const hasBottomConnection = edges.some(
+    (e) => e.sourceId === node.id && e.sourcePosition === "bottom"
+  );
+  const hasLeftConnection = edges.some(
+    (e) => e.sourceId === node.id && e.sourcePosition === "left"
+  );
+  const hasRightConnection = edges.some(
+    (e) => e.sourceId === node.id && e.sourcePosition === "right"
+  );
+
   return (
     <Animated.View
       style={[styles.nodeContainer, animatedStyle, getNodeContainerStyle()]}
@@ -681,6 +793,11 @@ function DraggableNode({
           styles.connectionTop,
           getConnectionTopStyle(),
           isConnecting && !isSourceNode && styles.connectionPointActive,
+          hasTopConnection && { backgroundColor: "#4A9EE0", borderWidth: 0 },
+          {
+            zIndex: (node.elevation || 0) + 10,
+            elevation: (node.elevation || 0) + 10,
+          },
         ]}
         {...topPanResponder.panHandlers}
       />
@@ -690,6 +807,11 @@ function DraggableNode({
           styles.connectionBottom,
           getConnectionBottomStyle(),
           isConnecting && !isSourceNode && styles.connectionPointActive,
+          hasBottomConnection && { backgroundColor: "#4A9EE0", borderWidth: 0 },
+          {
+            zIndex: (node.elevation || 0) + 10,
+            elevation: (node.elevation || 0) + 10,
+          },
         ]}
         {...bottomPanResponder.panHandlers}
       />
@@ -699,6 +821,38 @@ function DraggableNode({
 export default function FlowchartCanvas() {
   const insets = useSafeAreaInsets();
   const [nodes, setNodes] = useState<Node[]>([]);
+  // Language State
+  const [language, setLanguage] = useState<Language>("en");
+  const t = translations[language];
+
+  // Load language from storage
+  useEffect(() => {
+    const loadLanguage = async () => {
+      try {
+        const savedLanguage = await AsyncStorage.getItem("FLOWCHART_LANGUAGE");
+        if (
+          savedLanguage &&
+          (savedLanguage === "en" || savedLanguage === "tr")
+        ) {
+          setLanguage(savedLanguage as Language);
+        }
+      } catch (error) {
+        console.error("Failed to load language", error);
+      }
+    };
+    loadLanguage();
+  }, []);
+
+  // Change language and save
+  const changeLanguage = async (lang: Language) => {
+    setLanguage(lang);
+    try {
+      await AsyncStorage.setItem("FLOWCHART_LANGUAGE", lang);
+    } catch (error) {
+      console.error("Failed to save language", error);
+    }
+  };
+
   const [showNodeModal, setShowNodeModal] = useState(false);
   const [showOptionsMenu, setShowOptionsMenu] = useState(false);
   const [nodeCounter, setNodeCounter] = useState(1);
@@ -721,6 +875,52 @@ export default function FlowchartCanvas() {
   } | null>(null);
   // Track current scale for gesture compensation
   const [currentScale, setCurrentScale] = useState(1);
+
+  // Selected node for options modal
+  const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [showNodeOptionsModal, setShowNodeOptionsModal] = useState(false);
+
+  // Edit Text Modal State
+  const [showEditTextModal, setShowEditTextModal] = useState(false);
+
+  // Language Modal State
+  const [showLanguageModal, setShowLanguageModal] = useState(false);
+  const [editTextValue, setEditTextValue] = useState("");
+  const [editTextBold, setEditTextBold] = useState(false);
+  const [editTextSize, setEditTextSize] = useState("12");
+  const [editTextColor, setEditTextColor] = useState("#333333");
+  const [showTextColorPicker, setShowTextColorPicker] = useState(false);
+
+  // Edit Element Modal State
+  const [showEditElementModal, setShowEditElementModal] = useState(false);
+  const [editElementBgColor, setEditElementBgColor] = useState("#FFFFFF");
+  const [editElementBorderColor, setEditElementBorderColor] =
+    useState("#4A9EE0");
+  const [editElementBorderWidth, setEditElementBorderWidth] = useState("2");
+  const [editElementElevation, setEditElementElevation] = useState("2");
+  const [showElementColorPicker, setShowElementColorPicker] = useState(false);
+  const [elementColorType, setElementColorType] = useState<
+    "background" | "border" | null
+  >(null);
+  const [tempElementColor, setTempElementColor] = useState("#FFFFFF");
+
+  // Change Defaults Modal State
+  const [showChangeDefaultsModal, setShowChangeDefaultsModal] = useState(false);
+  // Text Defaults
+  const [defaultTextBold, setDefaultTextBold] = useState(false);
+  const [defaultTextSize, setDefaultTextSize] = useState("16");
+  const [defaultTextColor, setDefaultTextColor] = useState("#000000");
+  // Element Defaults
+  const [defaultBgColor, setDefaultBgColor] = useState("#FFFFFF");
+  const [defaultBorderColor, setDefaultBorderColor] = useState("#4A9EE0");
+  const [defaultBorderWidth, setDefaultBorderWidth] = useState("2");
+  const [defaultElevation, setDefaultElevation] = useState("2");
+  // Color picker for defaults
+  const [showDefaultsColorPicker, setShowDefaultsColorPicker] = useState(false);
+  const [defaultsColorType, setDefaultsColorType] = useState<
+    "text" | "background" | "border" | null
+  >(null);
+  const [tempDefaultsColor, setTempDefaultsColor] = useState("#FFFFFF");
 
   // Grid Settings State
   const [showGridSettings, setShowGridSettings] = useState(false);
@@ -866,20 +1066,6 @@ export default function FlowchartCanvas() {
   const savedTranslateY = useSharedValue(initialY);
 
   // Get node dimensions based on type
-  const getNodeDimensions = (node: Node) => {
-    switch (node.type) {
-      case "diamond":
-        return { width: 80, height: 80 };
-      case "oval":
-        return { width: 130, height: 70 };
-      case "hexagon":
-        return { width: 140, height: 80 };
-      case "storage":
-        return { width: 100, height: 85 };
-      default:
-        return { width: NODE_WIDTH, height: NODE_HEIGHT };
-    }
-  };
 
   // Get connection point coordinates for a node, with optional override for dragging position
   const getConnectionPoint = (
@@ -1024,6 +1210,103 @@ export default function FlowchartCanvas() {
       node.id === nodeId ? { ...node, label: newLabel } : node
     );
     setNodes(newNodes);
+  };
+
+  // Handle node tap - show options modal
+  const handleNodeTap = (nodeId: string) => {
+    const node = nodes.find((n) => n.id === nodeId);
+    if (node) {
+      setSelectedNode(node);
+      setShowNodeOptionsModal(true);
+    }
+  };
+
+  // Delete selected node and its connections
+  const deleteSelectedNode = () => {
+    if (!selectedNode) return;
+    const newNodes = nodes.filter((n) => n.id !== selectedNode.id);
+    const newEdges = edges.filter(
+      (e) => e.sourceId !== selectedNode.id && e.targetId !== selectedNode.id
+    );
+    setNodes(newNodes);
+    setEdges(newEdges);
+    saveToHistory(newNodes, newEdges, nodeCounter);
+    setShowNodeOptionsModal(false);
+    setSelectedNode(null);
+  };
+
+  // Remove all connections from selected node
+  const removeNodeConnections = () => {
+    if (!selectedNode) return;
+    const newEdges = edges.filter(
+      (e) => e.sourceId !== selectedNode.id && e.targetId !== selectedNode.id
+    );
+    setEdges(newEdges);
+    saveToHistory(nodes, newEdges, nodeCounter);
+    setShowNodeOptionsModal(false);
+    setSelectedNode(null);
+  };
+
+  // Open Edit Text modal with current node values
+  const openEditTextModal = () => {
+    if (!selectedNode) return;
+    setEditTextValue(selectedNode.label);
+    setEditTextBold(selectedNode.isBold || false);
+    setEditTextSize(String(selectedNode.fontSize || 12));
+    setEditTextColor(selectedNode.textColor || "#333333");
+    setShowNodeOptionsModal(false);
+    setShowEditTextModal(true);
+  };
+
+  // Save text edits to node
+  const saveEditText = () => {
+    if (!selectedNode) return;
+    const newNodes = nodes.map((node) =>
+      node.id === selectedNode.id
+        ? {
+            ...node,
+            label: editTextValue,
+            isBold: editTextBold,
+            fontSize: parseFloat(editTextSize) || 12,
+            textColor: editTextColor,
+          }
+        : node
+    );
+    setNodes(newNodes);
+    saveToHistory(newNodes, edges, nodeCounter);
+    setShowEditTextModal(false);
+    setSelectedNode(null);
+  };
+
+  // Open Edit Element modal with current node values
+  const openEditElementModal = () => {
+    if (!selectedNode) return;
+    setEditElementBgColor(selectedNode.bgColor || "#FFFFFF");
+    setEditElementBorderColor(selectedNode.borderColor || "#4A9EE0");
+    setEditElementBorderWidth(String(selectedNode.borderWidth || 2));
+    setEditElementElevation(String(selectedNode.elevation || 2));
+    setShowNodeOptionsModal(false);
+    setShowEditElementModal(true);
+  };
+
+  // Save element edits to node
+  const saveEditElement = () => {
+    if (!selectedNode) return;
+    const newNodes = nodes.map((node) =>
+      node.id === selectedNode.id
+        ? {
+            ...node,
+            bgColor: editElementBgColor,
+            borderColor: editElementBorderColor,
+            borderWidth: parseFloat(editElementBorderWidth) || 2,
+            elevation: parseFloat(editElementElevation) || 2,
+          }
+        : node
+    );
+    setNodes(newNodes);
+    saveToHistory(newNodes, edges, nodeCounter);
+    setShowEditElementModal(false);
+    setSelectedNode(null);
   };
 
   // Handle double tap on connection point to add new node
@@ -1183,70 +1466,13 @@ export default function FlowchartCanvas() {
     savedTranslateY.value = initialY;
   };
 
-  // Fit all nodes in view
-  const fitToAllNodes = () => {
-    if (nodes.length === 0) {
-      resetView();
-      return;
-    }
-
-    // Calculate bounding box of all nodes (in canvas coordinates)
-    let minX = Infinity,
-      minY = Infinity,
-      maxX = -Infinity,
-      maxY = -Infinity;
-    nodes.forEach((node) => {
-      minX = Math.min(minX, node.x);
-      minY = Math.min(minY, node.y);
-      maxX = Math.max(maxX, node.x + NODE_WIDTH);
-      maxY = Math.max(maxY, node.y + NODE_HEIGHT);
-    });
-
-    // Calculate bounding box dimensions
-    const nodesWidth = maxX - minX;
-    const nodesHeight = maxY - minY;
-
-    // Screen available area
-    const headerHeight = insets.top + 60;
-    const bottomPadding = 120;
-    const sidePadding = 20;
-    const availableWidth = SCREEN_WIDTH - sidePadding * 2;
-    const availableHeight = SCREEN_HEIGHT - headerHeight - bottomPadding;
-
-    // Calculate scale to fit all nodes with some padding
-    const paddingFactor = 0.9; // 90% of available space
-    const scaleX = (availableWidth * paddingFactor) / nodesWidth;
-    const scaleY = (availableHeight * paddingFactor) / nodesHeight;
-    const newScale = Math.max(Math.min(scaleX, scaleY, MAX_SCALE), MIN_SCALE);
-
-    // Calculate the center of the nodes bounding box (in canvas coordinates)
-    const nodesCenterX = minX + nodesWidth / 2;
-    const nodesCenterY = minY + nodesHeight / 2;
-
-    // Calculate where screen center should be (accounting for header)
-    const screenCenterX = SCREEN_WIDTH / 2;
-    const screenCenterY = headerHeight + availableHeight / 2;
-
-    // Translation: move so that nodes center aligns with screen center
-    const newTranslateX = screenCenterX - nodesCenterX * newScale;
-    const newTranslateY = screenCenterY - nodesCenterY * newScale;
-
-    scale.value = withSpring(newScale);
-    savedScale.value = newScale;
-    setCurrentScale(newScale);
-    translateX.value = withSpring(newTranslateX);
-    translateY.value = withSpring(newTranslateY);
-    savedTranslateX.value = newTranslateX;
-    savedTranslateY.value = newTranslateY;
-  };
-
   return (
     <GestureHandlerRootView
       style={[styles.container, { backgroundColor: gridBackgroundColor }]}
     >
       {/* Header with Safe Area */}
       <View style={[styles.header, { paddingTop: insets.top }]}>
-        <Text style={styles.headerTitle}>Flowchart Creator</Text>
+        <Text style={styles.headerTitle}>{t.headerTitle}</Text>
         <View style={styles.headerButtons}>
           <TouchableOpacity style={styles.headerButton} onPress={zoomIn}>
             <Text style={styles.headerButtonText}>🔍+</Text>
@@ -1443,7 +1669,9 @@ export default function FlowchartCanvas() {
                 onDragging={handleNodeDragging}
                 onDragEnd={handleNodeDragEnd}
                 onLabelChange={handleLabelChange}
+                onNodeTap={handleNodeTap}
                 onConnectionPointTap={handleConnectionPointTap}
+                edges={edges}
                 onConnectionDragStart={handleConnectionDragStart}
                 onConnectionDragMove={handleConnectionDragMove}
                 onConnectionDragEnd={handleConnectionDragEnd}
@@ -1541,6 +1769,432 @@ export default function FlowchartCanvas() {
         </TouchableOpacity>
       </Modal>
 
+      {/* Node Options Modal */}
+      <Modal
+        visible={showNodeOptionsModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          setShowNodeOptionsModal(false);
+          setSelectedNode(null);
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            setShowNodeOptionsModal(false);
+            setSelectedNode(null);
+          }}
+        >
+          <View
+            style={styles.nodeOptionsContainer}
+            onStartShouldSetResponder={() => true}
+          >
+            <Text style={styles.nodeOptionsTitle}>
+              Element: {selectedNode?.label || selectedNode?.id}
+            </Text>
+
+            {/* Edit Text */}
+            <TouchableOpacity
+              style={styles.nodeOptionsItem}
+              onPress={openEditTextModal}
+            >
+              <MaterialCommunityIcons
+                name="format-text"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>{t.editText}</Text>
+            </TouchableOpacity>
+
+            {/* Edit Element */}
+            <TouchableOpacity
+              style={styles.nodeOptionsItem}
+              onPress={openEditElementModal}
+            >
+              <MaterialCommunityIcons
+                name="cog"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>{t.editElement}</Text>
+            </TouchableOpacity>
+
+            {/* Remove Connections */}
+            <TouchableOpacity
+              style={styles.nodeOptionsItem}
+              onPress={removeNodeConnections}
+            >
+              <MaterialCommunityIcons
+                name="link-variant-off"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Remove Connections</Text>
+            </TouchableOpacity>
+
+            {/* Delete Element */}
+            <TouchableOpacity
+              style={styles.nodeOptionsItem}
+              onPress={deleteSelectedNode}
+            >
+              <MaterialCommunityIcons
+                name="delete"
+                size={24}
+                color="#555"
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Delete Element</Text>
+            </TouchableOpacity>
+
+            <View style={styles.nodeOptionsSeparator} />
+
+            {/* Back Button */}
+            <TouchableOpacity
+              style={styles.nodeOptionsBackButton}
+              onPress={() => {
+                setShowNodeOptionsModal(false);
+                setSelectedNode(null);
+              }}
+            >
+              <Text style={styles.nodeOptionsBackText}>Back</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Edit Text Modal */}
+      <Modal
+        visible={showEditTextModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          if (showTextColorPicker) {
+            setShowTextColorPicker(false);
+          } else {
+            setShowEditTextModal(false);
+            setSelectedNode(null);
+          }
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            if (showTextColorPicker) {
+              setShowTextColorPicker(false);
+            } else {
+              setShowEditTextModal(false);
+              setSelectedNode(null);
+            }
+          }}
+        >
+          {showTextColorPicker ? (
+            <View
+              style={styles.colorPickerContainer}
+              onStartShouldSetResponder={() => true}
+            >
+              <Text style={styles.modalTitle}>Pick Text Color</Text>
+
+              <View style={styles.previewContainer}>
+                <View
+                  style={[
+                    styles.colorPreviewLarge,
+                    { backgroundColor: editTextColor },
+                  ]}
+                />
+                <Text style={styles.hexText}>{editTextColor}</Text>
+              </View>
+
+              <ScrollView
+                style={styles.colorPaletteScroll}
+                contentContainerStyle={styles.colorPaletteGrid}
+              >
+                {COLOR_PALETTE.map((color, index) => (
+                  <TouchableOpacity
+                    key={index}
+                    style={[
+                      styles.colorPaletteItem,
+                      { backgroundColor: color },
+                      editTextColor === color &&
+                        styles.colorPaletteItemSelected,
+                    ]}
+                    onPress={() => setEditTextColor(color)}
+                  />
+                ))}
+              </ScrollView>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity onPress={() => setShowTextColorPicker(false)}>
+                  <Text style={styles.resetButtonText}>Select</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowTextColorPicker(false)}>
+                  <Text style={styles.backButtonText}>Back</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            <View
+              style={styles.editTextContainer}
+              onStartShouldSetResponder={() => true}
+            >
+              <Text style={styles.editTextTitle}>Edit Text</Text>
+
+              {/* Text Input */}
+              <View style={styles.editTextInputContainer}>
+                <Text style={styles.editTextInputLabel}>Text</Text>
+                <TextInput
+                  style={styles.editTextInput}
+                  value={editTextValue}
+                  onChangeText={setEditTextValue}
+                  placeholder="Enter text"
+                  multiline
+                />
+              </View>
+
+              {/* Bold Checkbox */}
+              <View style={styles.editTextRow}>
+                <Text style={styles.editTextLabel}>Bold</Text>
+                <TouchableOpacity
+                  style={[
+                    styles.checkbox,
+                    editTextBold && styles.checkboxChecked,
+                  ]}
+                  onPress={() => setEditTextBold(!editTextBold)}
+                >
+                  {editTextBold && (
+                    <MaterialCommunityIcons
+                      name="check"
+                      size={18}
+                      color="#fff"
+                    />
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              {/* Size Input */}
+              <View style={styles.editTextRow}>
+                <Text style={styles.editTextLabel}>Size</Text>
+                <TextInput
+                  style={styles.editTextSizeInput}
+                  value={editTextSize}
+                  onChangeText={setEditTextSize}
+                  keyboardType="numeric"
+                  maxLength={5}
+                />
+              </View>
+
+              {/* Color Picker */}
+              <View style={styles.editTextRow}>
+                <Text style={styles.editTextLabel}>{t.textColor}</Text>
+                <TouchableOpacity
+                  style={[
+                    styles.colorCircle,
+                    { backgroundColor: editTextColor },
+                  ]}
+                  onPress={() => setShowTextColorPicker(true)}
+                />
+              </View>
+
+              <View style={styles.editTextButtons}>
+                <TouchableOpacity
+                  style={styles.editTextSaveButton}
+                  onPress={saveEditText}
+                >
+                  <Text style={styles.editTextSaveText}>{t.save}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.editTextBackButton}
+                  onPress={() => {
+                    setShowEditTextModal(false);
+                    setSelectedNode(null);
+                  }}
+                >
+                  <Text style={styles.nodeOptionsBackText}>Back</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Edit Element Modal */}
+      <Modal
+        visible={showEditElementModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          if (showElementColorPicker) {
+            setShowElementColorPicker(false);
+          } else {
+            setShowEditElementModal(false);
+            setSelectedNode(null);
+          }
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            if (showElementColorPicker) {
+              setShowElementColorPicker(false);
+            } else {
+              setShowEditElementModal(false);
+              setSelectedNode(null);
+            }
+          }}
+        >
+          {showElementColorPicker ? (
+            <View
+              style={styles.colorPickerContainer}
+              onStartShouldSetResponder={() => true}
+            >
+              <Text style={styles.modalTitle}>
+                Pick{" "}
+                {elementColorType === "background" ? "Background" : "Border"}{" "}
+                Color
+              </Text>
+
+              <View style={styles.previewContainer}>
+                <View
+                  style={[
+                    styles.colorPreviewLarge,
+                    { backgroundColor: tempElementColor },
+                  ]}
+                />
+                <Text style={styles.hexText}>{tempElementColor}</Text>
+              </View>
+
+              <ScrollView
+                style={styles.colorPaletteScroll}
+                contentContainerStyle={styles.colorPaletteGrid}
+              >
+                {COLOR_PALETTE.map((color, index) => (
+                  <TouchableOpacity
+                    key={index}
+                    style={[
+                      styles.colorPaletteItem,
+                      { backgroundColor: color },
+                      tempElementColor === color &&
+                        styles.colorPaletteItemSelected,
+                    ]}
+                    onPress={() => setTempElementColor(color)}
+                  />
+                ))}
+              </ScrollView>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (elementColorType === "background") {
+                      setEditElementBgColor(tempElementColor);
+                    } else if (elementColorType === "border") {
+                      setEditElementBorderColor(tempElementColor);
+                    }
+                    setShowElementColorPicker(false);
+                  }}
+                >
+                  <Text style={styles.resetButtonText}>Select</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setShowElementColorPicker(false)}
+                >
+                  <Text style={styles.backButtonText}>Back</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.editTextBackOverlay}
+              activeOpacity={1}
+              onPress={() => setShowEditElementModal(false)}
+            >
+              <View style={styles.editTextContainer}>
+                <Text style={styles.editTextTitle}>{t.editElement}</Text>
+
+                {/* Background Color */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>{t.backgroundColor}</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.colorCircle,
+                      { backgroundColor: editElementBgColor },
+                    ]}
+                    onPress={() => {
+                      setElementColorType("background");
+                      setTempElementColor(editElementBgColor);
+                      setShowElementColorPicker(true);
+                    }}
+                  />
+                </View>
+
+                {/* Border Color */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>{t.borderColor}</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.colorCircle,
+                      { backgroundColor: editElementBorderColor },
+                    ]}
+                    onPress={() => {
+                      setElementColorType("border");
+                      setTempElementColor(editElementBorderColor);
+                      setShowElementColorPicker(true);
+                    }}
+                  />
+                </View>
+
+                {/* Border Width */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>{t.borderWidth}</Text>
+                  <TextInput
+                    style={styles.editTextSizeInput}
+                    value={editElementBorderWidth}
+                    onChangeText={setEditElementBorderWidth}
+                    keyboardType="numeric"
+                    maxLength={4}
+                  />
+                </View>
+
+                {/* Elevation */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>{t.elevation}</Text>
+                  <TextInput
+                    style={styles.editTextSizeInput}
+                    value={editElementElevation}
+                    onChangeText={setEditElementElevation}
+                    keyboardType="numeric"
+                    maxLength={4}
+                  />
+                </View>
+
+                <View style={styles.editTextButtons}>
+                  <TouchableOpacity
+                    style={styles.editTextSaveButton}
+                    onPress={saveEditElement}
+                  >
+                    <Text style={styles.editTextSaveText}>{t.save}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.editTextBackButton}
+                    onPress={() => {
+                      setShowEditElementModal(false);
+                      setSelectedNode(null);
+                    }}
+                  >
+                    <Text style={styles.nodeOptionsBackText}>{t.back}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableOpacity>
+          )}
+        </TouchableOpacity>
+      </Modal>
+
       {/* Options Menu Modal */}
       <Modal
         visible={showOptionsMenu}
@@ -1573,22 +2227,6 @@ export default function FlowchartCanvas() {
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
-                fitToAllNodes();
-                setShowOptionsMenu(false);
-              }}
-            >
-              <MaterialCommunityIcons
-                name="fit-to-screen"
-                size={24}
-                color="#555"
-                style={styles.menuIcon}
-              />
-              <Text style={styles.menuText}>Fit All Nodes</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => {
                 setShowGridSettings(true);
                 setShowOptionsMenu(false);
               }}
@@ -1599,47 +2237,23 @@ export default function FlowchartCanvas() {
                 color="#555"
                 style={styles.menuIcon}
               />
-              <Text style={styles.menuText}>Grid Settings</Text>
+              <Text style={styles.menuText}>{t.gridSettings}</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.menuItem}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowChangeDefaultsModal(true);
+                setShowOptionsMenu(false);
+              }}
+            >
               <MaterialCommunityIcons
                 name="pencil"
                 size={24}
                 color="#555"
                 style={styles.menuIcon}
               />
-              <Text style={styles.menuText}>Change Defaults</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.menuItem}>
-              <MaterialCommunityIcons
-                name="image"
-                size={24}
-                color="#555"
-                style={styles.menuIcon}
-              />
-              <Text style={styles.menuText}>Export Image</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.menuItem}>
-              <MaterialCommunityIcons
-                name="download"
-                size={24}
-                color="#555"
-                style={styles.menuIcon}
-              />
-              <Text style={styles.menuText}>Export FCD</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.menuItem}>
-              <MaterialCommunityIcons
-                name="upload"
-                size={24}
-                color="#555"
-                style={styles.menuIcon}
-              />
-              <Text style={styles.menuText}>Import FCD</Text>
+              <Text style={styles.menuText}>{t.changeDefaults}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.menuItem}>
@@ -1649,16 +2263,28 @@ export default function FlowchartCanvas() {
                 color="#555"
                 style={styles.menuIcon}
               />
-              <Text style={styles.menuText}>Default Chart</Text>
+              <Text style={styles.menuText}>{t.defaultChart}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
-                setNodes([]);
-                setEdges([]);
-                setNodeCounter(1);
-                setShowOptionsMenu(false);
+                // Confirmation Alert for Clear Chart
+                Alert.alert(t.clearChart, t.clearChartConfirm, [
+                  {
+                    text: t.no,
+                    style: "cancel",
+                  },
+                  {
+                    text: t.yes,
+                    onPress: () => {
+                      setNodes([]);
+                      setEdges([]);
+                      setNodeCounter(1);
+                      setShowOptionsMenu(false);
+                    },
+                  },
+                ]);
               }}
             >
               <MaterialCommunityIcons
@@ -1667,50 +2293,28 @@ export default function FlowchartCanvas() {
                 color="#555"
                 style={styles.menuIcon}
               />
-              <Text style={styles.menuText}>Clear Chart</Text>
+              <Text style={styles.menuText}>{t.clearChart}</Text>
             </TouchableOpacity>
 
             <View style={styles.menuSeparator} />
 
-            <TouchableOpacity style={styles.menuItem}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowLanguageModal(true);
+                setShowOptionsMenu(false);
+              }}
+            >
               <MaterialCommunityIcons
-                name="youtube"
+                name="translate"
                 size={24}
                 color="#555"
                 style={styles.menuIcon}
               />
-              <Text style={styles.menuText}>YouTube Channel</Text>
+              <Text style={styles.menuText}>{t.languages}</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.menuItem}>
-              <MaterialCommunityIcons
-                name="instagram"
-                size={24}
-                color="#555"
-                style={styles.menuIcon}
-              />
-              <Text style={styles.menuText}>Instagram Page</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.menuItem}>
-              <MaterialCommunityIcons
-                name="star-circle"
-                size={24}
-                color="#555"
-                style={styles.menuIcon}
-              />
-              <Text style={styles.menuText}>Upgrade to Pro</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.menuItem}>
-              <MaterialCommunityIcons
-                name="store"
-                size={24}
-                color="#555"
-                style={styles.menuIcon}
-              />
-              <Text style={styles.menuText}>More Apps</Text>
-            </TouchableOpacity>
+            <View style={styles.menuSeparator} />
 
             <TouchableOpacity style={styles.menuItem}>
               <MaterialCommunityIcons
@@ -1719,7 +2323,83 @@ export default function FlowchartCanvas() {
                 color="#555"
                 style={styles.menuIcon}
               />
-              <Text style={styles.menuText}>Rate App</Text>
+              <Text style={styles.menuText}>{t.rateApp}</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Language Selection Modal */}
+      <Modal
+        visible={showLanguageModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowLanguageModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowLanguageModal(false)}
+        >
+          <View style={styles.editTextContainer}>
+            <Text style={styles.editTextTitle}>{t.selectLanguage}</Text>
+
+            <TouchableOpacity
+              style={[
+                styles.menuItem,
+                {
+                  backgroundColor:
+                    language === "en" ? "#f0f0f0" : "transparent",
+                  borderRadius: 8,
+                  marginBottom: 10,
+                },
+              ]}
+              onPress={() => {
+                changeLanguage("en");
+                setShowLanguageModal(false);
+              }}
+            >
+              <Text
+                style={{
+                  color: language === "en" ? "#4A9EE0" : "#555",
+                  fontSize: 16,
+                  fontWeight: language === "en" ? "bold" : "normal",
+                }}
+              >
+                {t.english}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.menuItem,
+                {
+                  backgroundColor:
+                    language === "tr" ? "#f0f0f0" : "transparent",
+                  borderRadius: 8,
+                },
+              ]}
+              onPress={() => {
+                changeLanguage("tr");
+                setShowLanguageModal(false);
+              }}
+            >
+              <Text
+                style={{
+                  color: language === "tr" ? "#4A9EE0" : "#555",
+                  fontSize: 16,
+                  fontWeight: language === "tr" ? "bold" : "normal",
+                }}
+              >
+                {t.turkish}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.editTextBackButton}
+              onPress={() => setShowLanguageModal(false)}
+            >
+              <Text style={styles.nodeOptionsBackText}>{t.close}</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1881,6 +2561,229 @@ export default function FlowchartCanvas() {
           </TouchableOpacity>
         </GestureHandlerRootView>
       </Modal>
+
+      {/* Change Defaults Modal */}
+      <Modal
+        visible={showChangeDefaultsModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          if (showDefaultsColorPicker) {
+            setShowDefaultsColorPicker(false);
+          } else {
+            setShowChangeDefaultsModal(false);
+          }
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            if (showDefaultsColorPicker) {
+              setShowDefaultsColorPicker(false);
+            } else {
+              setShowChangeDefaultsModal(false);
+            }
+          }}
+        >
+          {showDefaultsColorPicker ? (
+            <View
+              style={styles.colorPickerContainer}
+              onStartShouldSetResponder={() => true}
+            >
+              <Text style={styles.modalTitle}>
+                Pick{" "}
+                {defaultsColorType === "text"
+                  ? "Text"
+                  : defaultsColorType === "background"
+                  ? "Background"
+                  : "Border"}{" "}
+                Color
+              </Text>
+
+              <View style={styles.previewContainer}>
+                <View
+                  style={[
+                    styles.colorPreviewLarge,
+                    { backgroundColor: tempDefaultsColor },
+                  ]}
+                />
+                <Text style={styles.hexText}>{tempDefaultsColor}</Text>
+              </View>
+
+              <ScrollView
+                style={styles.colorPaletteScroll}
+                contentContainerStyle={styles.colorPaletteGrid}
+              >
+                {COLOR_PALETTE.map((color, index) => (
+                  <TouchableOpacity
+                    key={index}
+                    style={[
+                      styles.colorPaletteItem,
+                      { backgroundColor: color },
+                      tempDefaultsColor === color &&
+                        styles.colorPaletteItemSelected,
+                    ]}
+                    onPress={() => setTempDefaultsColor(color)}
+                  />
+                ))}
+              </ScrollView>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (defaultsColorType === "text") {
+                      setDefaultTextColor(tempDefaultsColor);
+                    } else if (defaultsColorType === "background") {
+                      setDefaultBgColor(tempDefaultsColor);
+                    } else if (defaultsColorType === "border") {
+                      setDefaultBorderColor(tempDefaultsColor);
+                    }
+                    setShowDefaultsColorPicker(false);
+                  }}
+                >
+                  <Text style={styles.resetButtonText}>Select</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setShowDefaultsColorPicker(false)}
+                >
+                  <Text style={styles.backButtonText}>Back</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            <ScrollView
+              style={styles.changeDefaultsScrollView}
+              contentContainerStyle={styles.changeDefaultsContent}
+              onStartShouldSetResponder={() => true}
+            >
+              {/* Text Defaults Section */}
+              <View style={styles.defaultsSection}>
+                <Text style={styles.defaultsSectionTitle}>Text Defaults</Text>
+
+                {/* Bold */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>{t.bold}</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.checkbox,
+                      defaultTextBold && styles.checkboxChecked,
+                    ]}
+                    onPress={() => setDefaultTextBold(!defaultTextBold)}
+                  >
+                    {defaultTextBold && (
+                      <MaterialCommunityIcons
+                        name="check"
+                        size={18}
+                        color="#fff"
+                      />
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                {/* Size */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>{t.fontSize}</Text>
+                  <TextInput
+                    style={styles.editTextSizeInput}
+                    value={defaultTextSize}
+                    onChangeText={setDefaultTextSize}
+                    keyboardType="numeric"
+                    maxLength={5}
+                  />
+                </View>
+
+                {/* Color */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>Color</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.colorCircle,
+                      { backgroundColor: defaultTextColor },
+                    ]}
+                    onPress={() => {
+                      setDefaultsColorType("text");
+                      setTempDefaultsColor(defaultTextColor);
+                      setShowDefaultsColorPicker(true);
+                    }}
+                  />
+                </View>
+              </View>
+
+              {/* Element Defaults Section */}
+              <View style={styles.defaultsSection}>
+                <Text style={styles.defaultsSectionTitle}>
+                  Element Defaults
+                </Text>
+
+                {/* Background Color */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>Background Color</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.colorCircle,
+                      { backgroundColor: defaultBgColor },
+                    ]}
+                    onPress={() => {
+                      setDefaultsColorType("background");
+                      setTempDefaultsColor(defaultBgColor);
+                      setShowDefaultsColorPicker(true);
+                    }}
+                  />
+                </View>
+
+                {/* Border Color */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>Border Color</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.colorCircle,
+                      { backgroundColor: defaultBorderColor },
+                    ]}
+                    onPress={() => {
+                      setDefaultsColorType("border");
+                      setTempDefaultsColor(defaultBorderColor);
+                      setShowDefaultsColorPicker(true);
+                    }}
+                  />
+                </View>
+
+                {/* Border Width */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>Border Width</Text>
+                  <TextInput
+                    style={styles.editTextSizeInput}
+                    value={defaultBorderWidth}
+                    onChangeText={setDefaultBorderWidth}
+                    keyboardType="numeric"
+                    maxLength={4}
+                  />
+                </View>
+
+                {/* Elevation */}
+                <View style={styles.editTextRow}>
+                  <Text style={styles.editTextLabel}>Elevation</Text>
+                  <TextInput
+                    style={styles.editTextSizeInput}
+                    value={defaultElevation}
+                    onChangeText={setDefaultElevation}
+                    keyboardType="numeric"
+                    maxLength={4}
+                  />
+                </View>
+              </View>
+
+              {/* Back Button */}
+              <TouchableOpacity
+                style={styles.defaultsBackButton}
+                onPress={() => setShowChangeDefaultsModal(false)}
+              >
+                <Text style={styles.nodeOptionsBackText}>Back</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          )}
+        </TouchableOpacity>
+      </Modal>
     </GestureHandlerRootView>
   );
 }
@@ -1960,12 +2863,6 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     justifyContent: "center",
     alignItems: "center",
-    elevation: 3,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    overflow: "hidden",
   },
   nodeText: {
     color: "#333333",
@@ -2460,5 +3357,167 @@ const styles = StyleSheet.create({
     borderColor: "#4A9EE0",
     borderWidth: 3,
     transform: [{ scale: 1.1 }],
+  },
+  nodeOptionsContainer: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: 20,
+    width: SCREEN_WIDTH * 0.85,
+    maxWidth: 400,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  nodeOptionsTitle: {
+    fontSize: 22,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 20,
+  },
+  nodeOptionsItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+  },
+  nodeOptionsSeparator: {
+    height: 1,
+    backgroundColor: "#E0E0E0",
+    marginVertical: 10,
+  },
+  nodeOptionsBackButton: {
+    alignItems: "flex-end",
+    paddingVertical: 10,
+  },
+  nodeOptionsBackText: {
+    fontSize: 16,
+    color: "#4A9EE0",
+    fontWeight: "500",
+  },
+  editTextContainer: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: 20,
+    width: SCREEN_WIDTH * 0.85,
+    maxWidth: 400,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  editTextTitle: {
+    fontSize: 22,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 20,
+  },
+  editTextInputContainer: {
+    marginBottom: 20,
+  },
+  editTextInputLabel: {
+    position: "absolute",
+    top: -10,
+    left: 10,
+    backgroundColor: "#fff",
+    paddingHorizontal: 5,
+    fontSize: 12,
+    color: "#666",
+    zIndex: 1,
+  },
+  editTextInput: {
+    borderWidth: 1,
+    borderColor: "#333",
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    minHeight: 50,
+  },
+  editTextRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 16,
+  },
+  editTextLabel: {
+    fontSize: 16,
+    color: "#333",
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderWidth: 2,
+    borderColor: "#333",
+    borderRadius: 4,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  checkboxChecked: {
+    backgroundColor: "#4A9EE0",
+    borderColor: "#4A9EE0",
+  },
+  editTextSizeInput: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#333",
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    fontSize: 16,
+    minWidth: 60,
+    textAlign: "right",
+  },
+  colorCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: "#ddd",
+  },
+  editTextButtons: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    marginTop: 20,
+    gap: 20,
+  },
+  editTextSaveButton: {
+    backgroundColor: "#4A9EE0",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  editTextSaveText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  editTextBackButton: {
+    paddingVertical: 10,
+  },
+  changeDefaultsScrollView: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    width: SCREEN_WIDTH * 0.9,
+    maxWidth: 420,
+    maxHeight: SCREEN_HEIGHT * 0.8,
+  },
+  changeDefaultsContent: {
+    padding: 20,
+  },
+  defaultsSection: {
+    backgroundColor: "#f9f9f9",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+  },
+  defaultsSectionTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 12,
+  },
+  defaultsBackButton: {
+    alignItems: "flex-end",
+    paddingVertical: 10,
   },
 });

@@ -1,50 +1,97 @@
-# Welcome to your Expo app 👋
+# Basic Flowchart
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+**Basic Flowchart** is a mobile-first flowchart creation tool built with React Native and Expo. It allows users to easily create, customize, and manage flowcharts with a touch-optimized interface. The app supports bilingual interfaces (English/Turkish) and persists user data and preferences automatically.
 
-## Get started
+## Key Features
 
-1. Install dependencies
+### 1. **Node Management**
 
-   ```bash
-   npm install
-   ```
+- **Add Nodes**: Drag and drop nodes from the sidebar onto the canvas.
+- **Node Types**:
+  - **Rectangle**: Standard process step.
+  - **Diamond**: Decision point.
+  - **Ellipse**: Start/End terminator.
+  - **Parallelogram**: Input/Output.
+  - **Hexagon**: Preparation/Initialization.
+  - **Storage**: Data storage/Database.
+- **Drag & Drop**: smooth dragging mechanics with `PanResponder`.
+- **Snap to Grid**: Optional grid snapping (configurable) for alignment.
 
-2. Start the app
+### 2. **Connections (Edges)**
 
-   ```bash
-   npx expo start
-   ```
+- **Create Connections**: Drag from any connection point (top, bottom, left, right) of a node to another node's connection point.
+- **Visual Feedback**: Active connection points light up when dragging starts. Use of dynamic hit-testing ensures accurate connections even for complex shapes like Diamonds.
+- **Automatic Routing**: Edges are drawn as straight lines utilizing SVG.
 
-In the output, you'll find options to open the app in a
+### 3. **Customization**
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+- **Edit Text**: Double-tap a node to edit its label. Support for bold text, font size, and text color.
+- **Edit Element**: Customize individual node properties:
+  - Background Color
+  - Border Color & Width
+  - Elevation (Shadow depth)
+- **Global Defaults**: Set default styles for all new nodes via "Change Defaults" in the menu.
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+### 4. **Canvas Tools**
 
-## Get a fresh project
+- **Zoom & Pan**: Pinch to zoom and drag to pan around an infinite canvas.
+- **Grid**: Toggleable background grid with customizable size and color.
+- **Reset View**: Quickly return to the default zoom and center position.
 
-When you're ready, run:
+### 5. **Multi-Language Support**
 
-```bash
-npm run reset-project
-```
+- **Bilingual**: Full support for **English** and **Turkish**.
+- **Dynamic Switching**: Change languages instantly from the "Options" -> "Languages" menu.
+- **Persistence**: Language preference is saved and reloads on app launch.
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### 6. **Data Persistence**
 
-## Learn more
+- **Auto-Save**: The chart layout (nodes and connections) and user preferences (language, defaults) are automatically saved to local storage (`AsyncStorage`).
 
-To learn more about developing your project with Expo, look at the following resources:
+## Installation & Running
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+1.  **Install Dependencies**:
 
-## Join the community
+    ```bash
+    npm install
+    ```
 
-Join our community of developers creating universal apps.
+2.  **Start the App**:
+    ```bash
+    npx expo start
+    ```
+    - Press `a` for Android Emulator
+    - Press `i` for iOS Simulator
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## User Guide
+
+### Getting Started
+
+1.  **Adding a Node**: Open the sidebar (if closed), press and hold a shape, and drag it into the workspace.
+2.  **Connecting Nodes**: Tap and drag from a blue dot (connection point) on one node to a dot on another node.
+3.  **Editing**:
+    - **Text**: Tap a node, then tap "Edit Text" (or double-tap).
+    - **Style**: Tap a node -> "Edit Element" to change colors and borders.
+4.  **Deleting**: Tap a node -> "Delete". Or clear the entire chart from Options -> "Clear Chart".
+
+### Changing Language
+
+1.  Tap the **Options** menu icon (top right).
+2.  Select **Languages** (or **Diller**).
+3.  Choose **English** or **Türkçe**.
+4.  Tap **Close**.
+
+## Technical Stack
+
+- **Framework**: React Native (Expo SDK)
+- **Language**: TypeScript
+- **Graphics**: `react-native-svg` for shapes and lines.
+- **Animations**: `react-native-reanimated` for UI transitions.
+- **Icons**: `react-native-vector-icons` (MaterialCommunityIcons).
+- **Storage**: `@react-native-async-storage/async-storage` for local data persistence.
+
+## Architecture Highlights
+
+- **Single Canvas Component**: Core logic resides in `FlowchartCanvas.tsx`.
+- **Coordinate System**: A unified coordinate system handles pan/zoom offsets to map screen touches to canvas coordinates.
+- **Localization**: A lightweight Translation Manager (`translations.ts`) handles internationalization without heavy external libraries.
